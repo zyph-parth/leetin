@@ -6,7 +6,7 @@ import type { SM2State } from '@/lib/srs';
 import {
   MockInterview, InterviewDuration,
   generateMockInterview, loadSession, saveSession, clearSession,
-  getElapsedMs, getRemainingMs, formatTime,
+  getElapsedMs, getRemainingMs, formatTime, toggleProblemCompletion,
 } from '@/lib/mock-interview';
 
 /* ─── Design tokens ──────────────────────────────────────────── */
@@ -186,10 +186,11 @@ function ProblemRow({
 interface MockInterviewPanelProps {
   analytics: Analytics;
   srsStates: Record<string, SM2State>;
+  username: string;
   targetCompany: string;
 }
 
-export default function MockInterviewPanel({ analytics, srsStates, targetCompany }: MockInterviewPanelProps) {
+export default function MockInterviewPanel({ analytics, srsStates, username, targetCompany }: MockInterviewPanelProps) {
   const [session, setSession] = useState<MockInterview | null>(null);
   const [duration, setDuration] = useState<InterviewDuration>(60);
   const [nowMs, setNowMs] = useState(Date.now());
@@ -198,10 +199,11 @@ export default function MockInterviewPanel({ analytics, srsStates, targetCompany
 
   // Load persisted session on mount
   useEffect(() => {
-    const saved = loadSession();
-    if (saved && saved.status !== 'finished') setSession(saved);
+    const saved = loadSession(username);
+    setSession(saved && saved.status !== 'finished' ? saved : null);
+    setNowMs(Date.now());
     setMounted(true);
-  }, []);
+  }, [username]);
 
   // Ticker — only runs when session is active
   useEffect(() => {
@@ -235,7 +237,7 @@ export default function MockInterviewPanel({ analytics, srsStates, targetCompany
   }, []);
 
   function handleGenerate() {
-    const s = generateMockInterview(analytics, srsStates, targetCompany, duration);
+    const s = generateMockInterview(analytics, srsStates, username, targetCompany, duration);
     saveSession(s);
     setSession(s);
   }
@@ -267,18 +269,13 @@ export default function MockInterviewPanel({ analytics, srsStates, targetCompany
   }
 
   function handleReset() {
-    clearSession();
+    clearSession(username);
     setSession(null);
   }
 
   function handleToggleProblem(index: number) {
     updateSession(prev => {
-      const problems = prev.problems.map((p, i) =>
-        i === index
-          ? { ...p, completed: !p.completed, timeSpentMs: !p.completed ? getElapsedMs(prev) : null }
-          : p
-      );
-      return { ...prev, problems };
+      return toggleProblemCompletion(prev, index, Date.now());
     });
   }
 
@@ -290,6 +287,35 @@ export default function MockInterviewPanel({ analytics, srsStates, targetCompany
 
   return (
     <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: '16px', overflow: 'hidden' }}>
+      <style>{`
+        .mock-session-pills {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          flex-wrap: wrap;
+        }
+        .mock-duration-grid {
+          display: flex;
+          gap: 10px;
+        }
+        .mock-session-top {
+          display: flex;
+          align-items: center;
+          gap: 28px;
+          flex-wrap: wrap;
+        }
+        @media (max-width: 720px) {
+          .mock-panel-body {
+            padding: 22px 18px !important;
+          }
+          .mock-duration-grid {
+            flex-direction: column;
+          }
+          .mock-session-top {
+            gap: 20px;
+          }
+        }
+      `}</style>
       {/* ── Header ─────────────────────────────────────────── */}
       <div style={{
         padding: '20px 26px',
@@ -310,7 +336,7 @@ export default function MockInterviewPanel({ analytics, srsStates, targetCompany
         </div>
 
         {session && session.status !== 'idle' && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+          <div className="mock-session-pills">
             {/* Progress pills */}
             <span style={{
               fontSize: '11px', fontFamily: 'DM Mono, monospace',
@@ -332,7 +358,7 @@ export default function MockInterviewPanel({ analytics, srsStates, targetCompany
       </div>
 
       {/* ── Body ───────────────────────────────────────────── */}
-      <div style={{ padding: '26px' }}>
+      <div className="mock-panel-body" style={{ padding: '26px' }}>
 
         {/* ── Config / Generate screen ─────────────────────── */}
         {!session && (
@@ -342,7 +368,7 @@ export default function MockInterviewPanel({ analytics, srsStates, targetCompany
               <div style={{ fontSize: '10px', color: C.textMuted, fontFamily: 'DM Mono, monospace', letterSpacing: '0.12em', marginBottom: '12px' }}>
                 DURATION
               </div>
-              <div style={{ display: 'flex', gap: '10px' }}>
+              <div className="mock-duration-grid">
                 {DURATIONS.map(d => (
                   <button
                     key={d.value}
@@ -422,8 +448,7 @@ export default function MockInterviewPanel({ analytics, srsStates, targetCompany
           <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
 
             {/* Timer + controls row */}
-            <div style={{
-              display: 'flex', alignItems: 'center', gap: '28px', flexWrap: 'wrap',
+            <div className="mock-session-top" style={{
               padding: '20px 24px', background: C.surface2,
               border: `1px solid ${C.border}`, borderRadius: '14px',
             }}>
@@ -531,7 +556,7 @@ export default function MockInterviewPanel({ analytics, srsStates, targetCompany
                 fontSize: '12px', color: C.textMuted, fontFamily: 'DM Mono, monospace',
                 textAlign: 'center',
               }}>
-                Start the timer when you are ready to open the first problem
+                Start the timer when you are ready to open the first problem. Links unlock with the session.
               </div>
             )}
           </div>

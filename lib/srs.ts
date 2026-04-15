@@ -66,6 +66,11 @@ export interface CurvePoint {
   isReview?: boolean;// marks where a scheduled review falls
 }
 
+export interface UpdateSM2Options {
+  nowMs?: number;
+  random?: () => number;
+}
+
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const MIN_EF = 1.3;
@@ -79,14 +84,6 @@ const DIFFICULTY_SEED: Record<Difficulty, { ef: number; interval: number }> = {
   Medium: { ef: 2.2, interval: 3 },
   Easy:   { ef: DEFAULT_EF, interval: 7 },
 };
-
-/** Maps EF range → memory stability S (days). Used in Ebbinghaus formula. */
-function efToStability(ef: number): number {
-  if (ef >= 2.5) return 14;
-  if (ef >= 2.0) return 7;
-  if (ef >= 1.5) return 4;
-  return 2;
-}
 
 // ─── Core Algorithm ──────────────────────────────────────────────────────────
 
@@ -138,9 +135,15 @@ export function computeInitialState(
  *             EF  = max(1.3, EF)
  *             n++
  */
-export function updateSM2(state: SM2State, quality: ReviewQuality): SM2State {
-  const now = Date.now();
+export function updateSM2(
+  state: SM2State,
+  quality: ReviewQuality,
+  options: UpdateSM2Options = {},
+): SM2State {
+  const now = options.nowMs ?? Date.now();
+  const random = options.random ?? Math.random;
   let { n, ef, interval } = state;
+  const isFirstReviewFromBootstrap = state.totalReviews === 0 && state.lastRating === null;
 
   if (quality < 3) {
     // Failed recall — reset to beginning
@@ -151,23 +154,30 @@ export function updateSM2(state: SM2State, quality: ReviewQuality): SM2State {
     ef = Math.max(MIN_EF, ef - 0.15);
   } else {
     // Successful recall
-    if (n === 0) {
+    if (isFirstReviewFromBootstrap) {
+      // The seeded interval already represents the first spacing step, so the
+      // first successful review should not collapse back to day 1 or day 6.
+      interval = Math.max(6, interval);
+      n = 2;
+    } else if (n === 0) {
       interval = 1;
+      n++;
     } else if (n === 1) {
       // Add a tiny fuzz to the first jump to prevent exact day-6 clumping
-      const fuzz = Math.random() < 0.5 ? 0 : 1;
+      const fuzz = random() < 0.5 ? 0 : 1;
       interval = 6 + fuzz;
+      n++;
     } else {
       // Review Fuzzing: +/- 5% jitter to prevent interval clustering
       const exactInterval = interval * ef;
-      const fuzzFactor = 0.95 + Math.random() * 0.10;
+      const fuzzFactor = 0.95 + random() * 0.10;
       interval = Math.round(exactInterval * fuzzFactor);
+      n++;
     }
 
     // EF update — the quadratic formula from the SM-2 paper
     ef = ef + (0.1 - (5 - quality) * (0.08 + (5 - quality) * 0.02));
     ef = Math.max(MIN_EF, ef);
-    n++;
   }
 
   return {
@@ -201,16 +211,17 @@ export function getRetentionPercent(state: SM2State, nowMs = Date.now()): number
  * < 12 hours to display "Due in 0d" — confusing and technically wrong.
  *
  * New behaviour:
- *   - Overdue (past due):  Math.floor  → always a positive integer once past due
- *   - Upcoming (not yet):  Math.ceil   → always a positive integer until the moment it's due
- *   - Exactly on the day:  returns 0   → caller should display "Due today"
+ *   - Within the next/past 24h: returns 0 → caller should display "Due today"
+ *   - Overdue by 1+ full day:   Math.floor
+ *   - Upcoming by 1+ full day:  Math.ceil
  *
  * Returns the number of days a problem is overdue (negative = not yet due).
  * Positive = days past due date. Negative = days until due. Zero = due today.
  */
 export function getDaysOverdue(state: SM2State, nowMs = Date.now()): number {
   const rawDays = (nowMs - state.nextReviewMs) / MS_PER_DAY;
-  return Math.floor(rawDays);
+  if (Math.abs(rawDays) < 1) return 0;
+  return rawDays > 0 ? Math.floor(rawDays) : Math.ceil(rawDays);
 }
 
 /**
@@ -221,7 +232,7 @@ export function getDaysOverdue(state: SM2State, nowMs = Date.now()): number {
 export function getDueProblems(
   states: Record<string, SM2State>,
   nowMs = Date.now(),
-  limit = 10,
+  limit = Number.POSITIVE_INFINITY,
 ): SM2State[] {
   const all = Object.values(states);
 

@@ -1,17 +1,22 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { fetchLeetCodeProfile } from '@/lib/leetcode';
+import { fetchLeetCodeProfile, LeetCodeApiError } from '@/lib/leetcode';
 
 export async function GET(req: NextRequest) {
-  const username = req.nextUrl.searchParams.get('username');
+  const username = req.nextUrl.searchParams.get('username')?.trim();
   if (!username) {
     return NextResponse.json({ error: 'Username required' }, { status: 400 });
   }
 
   try {
-    const profile = await fetchLeetCodeProfile(username.trim());
+    const profile = await fetchLeetCodeProfile(username);
     return NextResponse.json(profile);
   } catch (err) {
+    if (err instanceof LeetCodeApiError) {
+      return NextResponse.json({ error: err.message }, { status: err.status });
+    }
+
     const message = err instanceof Error ? err.message : 'Failed to fetch profile';
-    return NextResponse.json({ error: message }, { status: 404 });
+    const status = /not found/i.test(message) ? 404 : 502;
+    return NextResponse.json({ error: message }, { status });
   }
 }

@@ -4,34 +4,18 @@
  * Persistence layer for SRS state.
  * Uses localStorage with a per-username key so multiple users
  * on the same browser don't collide.
- *
- * Storage key format: `leetinsight:srs:{username}`
- * Value: JSON-serialized Record<slug, SM2State>
- *
- * MERGE STRATEGY:
- *   On each dashboard load, mergeFreshProblems() is called.
- *   It iterates the LeetCode profile's recent submissions, finds
- *   accepted ones not yet in the store, and adds them with an
- *   initial SM-2 state. Existing states are NEVER overwritten —
- *   the user's review history is preserved across sessions.
  */
 
 import type { LeetCodeProfile } from './leetcode';
-import {
-  SM2State,
-  Difficulty,
-  computeInitialState,
-} from './srs';
+import type { SM2State, Difficulty, ReviewQuality } from './srs';
+import { computeInitialState } from './srs';
 
-const STORAGE_PREFIX = 'leetinsight:srs:';
+export const SRS_STORAGE_PREFIX = 'leetinsight:srs:';
 
-/**
- * Safely retrieves the localStorage object.
- * Node 22 exposes a global `localStorage` that THROWS when accessed
- * (unless --localstorage-file is set), so we must wrap the access
- * in a try-catch instead of a simple typeof/undefined check.
- * Returns null on the server or when localStorage is unavailable.
- */
+const DEFAULT_EF = 2.5;
+const MIN_EF = 1.3;
+const MS_PER_DAY = 86_400_000;
+
 function getLocalStorage(): Storage | null {
   try {
     if (typeof window === 'undefined') return null;
@@ -43,55 +27,123 @@ function getLocalStorage(): Storage | null {
   }
 }
 
-// ─── Persistence ─────────────────────────────────────────────────────────────
+function isDifficulty(value: unknown): value is Difficulty {
+  return value === 'Easy' || value === 'Medium' || value === 'Hard';
+}
 
-/**
- * Load all SRS states for a username from localStorage.
- * Returns an empty object if nothing is stored yet.
- */
+function isReviewQuality(value: unknown): value is ReviewQuality {
+  return Number.isInteger(value) && Number(value) >= 0 && Number(value) <= 5;
+}
+
+function toFiniteNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function toNonNegativeInteger(value: unknown, fallback: number): number {
+  const numeric = toFiniteNumber(value);
+  if (numeric === null) return fallback;
+  return Math.max(0, Math.round(numeric));
+}
+
+function slugToTitle(slug: string): string {
+  return slug
+    .split('-')
+    .filter(Boolean)
+    .map((word) => word[0]?.toUpperCase() + word.slice(1))
+    .join(' ');
+}
+
+function sanitizeTopics(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+
+  return Array.from(
+    new Set(
+      value
+        .filter((topic): topic is string => typeof topic === 'string')
+        .map((topic) => topic.trim())
+        .filter(Boolean),
+    ),
+  ).slice(0, 8);
+}
+
+export function getSRSStorageKey(username: string): string {
+  return `${SRS_STORAGE_PREFIX}${username}`;
+}
+
+export function sanitizeSM2State(value: unknown, slugHint?: string): SM2State | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
+
+  const raw = value as Record<string, unknown>;
+  const slug = typeof raw.slug === 'string' && raw.slug.trim()
+    ? raw.slug.trim()
+    : typeof slugHint === 'string' && slugHint.trim()
+      ? slugHint.trim()
+      : null;
+
+  const interval = Math.max(1, toNonNegativeInteger(raw.interval, 1));
+  const nextReviewMs = toFiniteNumber(raw.nextReviewMs);
+  if (!slug || nextReviewMs === null) return null;
+
+  const lastReviewMs = toFiniteNumber(raw.lastReviewMs) ?? (nextReviewMs - interval * MS_PER_DAY);
+  const solvedAtMs = toFiniteNumber(raw.solvedAtMs) ?? lastReviewMs;
+  const lastRating = raw.lastRating == null
+    ? null
+    : isReviewQuality(raw.lastRating)
+      ? raw.lastRating
+      : null;
+
+  return {
+    slug,
+    title: typeof raw.title === 'string' && raw.title.trim() ? raw.title.trim() : slugToTitle(slug),
+    difficulty: isDifficulty(raw.difficulty) ? raw.difficulty : 'Medium',
+    topics: sanitizeTopics(raw.topics),
+    number: toFiniteNumber(raw.number) ?? -1,
+    n: toNonNegativeInteger(raw.n, 0),
+    ef: Math.max(MIN_EF, toFiniteNumber(raw.ef) ?? DEFAULT_EF),
+    interval,
+    nextReviewMs,
+    lastReviewMs,
+    solvedAtMs,
+    lastRating,
+    totalReviews: toNonNegativeInteger(raw.totalReviews, lastRating === null ? 0 : 1),
+  };
+}
+
+export function sanitizeSRSRecord(record: unknown): Record<string, SM2State> {
+  if (typeof record !== 'object' || record === null || Array.isArray(record)) return {};
+
+  return Object.fromEntries(
+    Object.entries(record as Record<string, unknown>).flatMap(([slug, value]) => {
+      const sanitized = sanitizeSM2State(value, slug);
+      return sanitized ? [[sanitized.slug, sanitized]] : [];
+    }),
+  );
+}
+
 export function loadSRSData(username: string): Record<string, SM2State> {
   const ls = getLocalStorage();
   if (!ls) return {};
+
   try {
-    const raw = ls.getItem(`${STORAGE_PREFIX}${username}`);
+    const raw = ls.getItem(getSRSStorageKey(username));
     if (!raw) return {};
-    const parsed = JSON.parse(raw) as Record<string, SM2State>;
-    if (typeof parsed !== 'object' || Array.isArray(parsed)) return {};
-
-    const isValidState = (v: unknown): v is SM2State =>
-      typeof v === 'object' &&
-      v !== null &&
-      typeof (v as SM2State).slug === 'string' &&
-      typeof (v as SM2State).interval === 'number' &&
-      typeof (v as SM2State).nextReviewMs === 'number';
-
-    return Object.fromEntries(
-      Object.entries(parsed).filter(([, v]) => isValidState(v)),
-    );
+    return sanitizeSRSRecord(JSON.parse(raw));
   } catch {
     return {};
   }
 }
 
-/**
- * Persist SRS states for a username to localStorage.
- * Silently swallows storage quota errors — the app keeps working,
- * just without persistence for that session.
- */
 export function saveSRSData(username: string, data: Record<string, SM2State>): void {
   const ls = getLocalStorage();
   if (!ls) return;
+
   try {
-    ls.setItem(`${STORAGE_PREFIX}${username}`, JSON.stringify(data));
+    ls.setItem(getSRSStorageKey(username), JSON.stringify(data));
   } catch (e) {
     console.warn('[SRS] localStorage write failed:', e);
   }
 }
 
-/**
- * Update a single problem's state and immediately persist.
- * This is what gets called when the user submits a review rating.
- */
 export function saveSingleState(
   username: string,
   state: SM2State,
@@ -102,18 +154,6 @@ export function saveSingleState(
   return updated;
 }
 
-// ─── Profile Integration ──────────────────────────────────────────────────────
-
-/**
- * Extracts solved problems from a LeetCode profile.
- *
- * LeetCode's recentSubmissions only gives us the last 20 accepted.
- * To catch older solves we also scan submissionCalendar (which has
- * timestamps but not slugs) and tagStats (which has topics but not slugs).
- *
- * Best-effort: we build as rich a picture as possible from what the
- * public API exposes, then infer what we can't directly see.
- */
 export interface SolvedProblem {
   slug: string;
   title: string;
@@ -123,74 +163,43 @@ export interface SolvedProblem {
   solvedAtMs: number;
 }
 
-/**
- * Builds a list of unique solved problems from the profile.
- * Deduplicates by slug, keeping the earliest solve timestamp.
- */
 export function extractSolvedProblems(profile: LeetCodeProfile): SolvedProblem[] {
   const seen = new Map<string, SolvedProblem>();
 
-  for (const sub of profile.recentSubmissions ?? []) {
-    if (sub.statusDisplay !== 'Accepted') continue;
+  for (const submission of profile.recentSubmissions ?? []) {
+    if (submission.statusDisplay !== 'Accepted') continue;
 
-    const slug = sub.titleSlug ?? slugify(sub.title ?? '');
+    const slug = submission.titleSlug?.trim();
     if (!slug) continue;
 
-    const existing = seen.get(slug);
-    const ts = (Number(sub.timestamp) || 0) * 1000;
+    const solvedAtMs = Math.max(0, (Number(submission.timestamp) || 0) * 1000) || Date.now();
+    const current = seen.get(slug);
 
-    const subExt = sub as unknown as {
-      difficulty?: string;
-      topicTags?: Array<{ name: string }>;
-      frontendId?: number;
-    };
-
-    if (!existing || ts < existing.solvedAtMs) {
+    if (!current || solvedAtMs < current.solvedAtMs) {
       seen.set(slug, {
         slug,
-        title: sub.title ?? slug,
-        difficulty: (subExt.difficulty as Difficulty | undefined) ?? 'Medium',
-        topics: subExt.topicTags?.map((t) => t.name) ?? [],
-        number: subExt.frontendId ?? -1,
-        solvedAtMs: ts || Date.now(),
+        title: submission.title || slugToTitle(slug),
+        difficulty: submission.difficulty ?? 'Medium',
+        topics: sanitizeTopics(submission.topicTags?.map((topic) => topic.name) ?? []),
+        number: submission.frontendId ?? -1,
+        solvedAtMs,
       });
-    }
-  }
-
-  for (const [, entries] of Object.entries(profile.tagStats ?? {})) {
-    for (const entry of entries as unknown as Array<{
-      titleSlug?: string;
-      tagName?: string;
-    }>) {
-      if (!entry.titleSlug || !entry.tagName) continue;
-      const prob = seen.get(entry.titleSlug);
-      if (prob && !prob.topics.includes(entry.tagName)) {
-        prob.topics.push(entry.tagName);
-      }
     }
   }
 
   return Array.from(seen.values());
 }
 
-/**
- * The core merge function. Called on every dashboard load.
- *
- * - Takes the existing stored SRS data and the fresh profile.
- * - Adds initial SM-2 states for any solved problems NOT yet in the store.
- * - NEVER modifies states that already exist (preserves review history).
- * - Returns the updated data and persists it.
- */
 export function mergeFreshProblems(
   username: string,
   existing: Record<string, SM2State>,
   profile: LeetCodeProfile,
 ): Record<string, SM2State> {
-  const solved = extractSolvedProblems(profile);
+  const solvedProblems = extractSolvedProblems(profile);
   let changed = false;
   const result = { ...existing };
 
-  for (const problem of solved) {
+  for (const problem of solvedProblems) {
     if (result[problem.slug]) continue;
 
     result[problem.slug] = computeInitialState(
@@ -204,41 +213,21 @@ export function mergeFreshProblems(
     changed = true;
   }
 
-  if (!changed) {
-    return existing;
-  }
+  if (!changed) return existing;
 
   saveSRSData(username, result);
   return result;
 }
 
-/**
- * Wipes all SRS data for a username. Useful for "reset" functionality.
- */
 export function clearSRSData(username: string): void {
   const ls = getLocalStorage();
   if (!ls) return;
-  ls.removeItem(`${STORAGE_PREFIX}${username}`);
+  ls.removeItem(getSRSStorageKey(username));
 }
 
-/**
- * Returns the storage size in bytes for a username's SRS data.
- * Useful for a "storage used" indicator.
- */
 export function getSRSStorageSize(username: string): number {
   const ls = getLocalStorage();
   if (!ls) return 0;
-  const raw = ls.getItem(`${STORAGE_PREFIX}${username}`) ?? '';
+  const raw = ls.getItem(getSRSStorageKey(username)) ?? '';
   return new Blob([raw]).size;
-}
-
-// ─── Helpers ─────────────────────────────────────────────────────────────────
-
-/** Converts a problem title to a URL slug ("Two Sum" → "two-sum") */
-function slugify(title: string): string {
-  return title
-    .toLowerCase()
-    .replace(/[^a-z0-9\s-]/g, '')
-    .trim()
-    .replace(/\s+/g, '-');
 }

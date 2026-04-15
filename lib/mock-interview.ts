@@ -2,22 +2,12 @@
  * lib/mock-interview.ts
  *
  * Problem selection logic for the Virtual Mock Interview feature.
- * Pure functions — no side effects, fully testable.
- *
- * Selection strategy:
- *   Easy   — lowest-retention due/overdue Easy from SRS; fallback to weak-topic Easy
- *            from recommendedProblems. NOT random — targets memory gaps.
- *   Medium — from recommendedProblems filtered to weakTopics[0] + targetCompany,
- *            highest matchScore wins.
- *   Hard   — from recommendedProblems filtered Hard, sorted by matchScore descending;
- *            intentionally NOT from strength areas (strength doesn't need drilling).
+ * Pure functions for selection plus light localStorage persistence.
  */
 
-import type { Analytics, RecommendedProblem } from './analytics';
+import type { Analytics } from './analytics';
 import type { SM2State } from './srs';
 import { getDueProblems, getRetentionPercent } from './srs';
-
-// ─── Public types ─────────────────────────────────────────────────
 
 export type InterviewDuration = 45 | 60 | 90;
 
@@ -29,7 +19,6 @@ export interface MockProblem {
   reason: string;
   leetcodeUrl: string;
   completed: boolean;
-  /** ms elapsed on this specific problem when the user marks it done */
   timeSpentMs: number | null;
 }
 
@@ -37,30 +26,111 @@ export type InterviewStatus = 'idle' | 'running' | 'paused' | 'finished';
 
 export interface MockInterview {
   id: string;
+  username: string;
   generatedAt: number;
   targetCompany: string;
   durationMs: number;
-  /** Unix ms — set when status transitions idle→running */
   startedAt: number | null;
-  /** Accumulated ms before the current pause started */
   accumulatedMs: number;
   problems: MockProblem[];
   status: InterviewStatus;
 }
 
-// ─── localStorage persistence ─────────────────────────────────────
+const SESSION_PREFIX = 'leetinsight:mock:session:';
 
-const SESSION_KEY = 'leetinsight:mock:session';
+function getSessionKey(username: string): string {
+  return `${SESSION_PREFIX}${username}`;
+}
 
-export function loadSession(): MockInterview | null {
+function isStatus(value: unknown): value is InterviewStatus {
+  return value === 'idle' || value === 'running' || value === 'paused' || value === 'finished';
+}
+
+function sanitizeProblem(value: unknown): MockProblem | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
+
+  const raw = value as Record<string, unknown>;
+  const difficulty = raw.difficulty;
+  if (
+    typeof raw.slug !== 'string' ||
+    typeof raw.title !== 'string' ||
+    typeof raw.topic !== 'string' ||
+    typeof raw.reason !== 'string' ||
+    typeof raw.leetcodeUrl !== 'string' ||
+    typeof raw.completed !== 'boolean' ||
+    (difficulty !== 'Easy' && difficulty !== 'Medium' && difficulty !== 'Hard')
+  ) {
+    return null;
+  }
+
+  return {
+    slug: raw.slug,
+    title: raw.title,
+    difficulty,
+    topic: raw.topic,
+    reason: raw.reason,
+    leetcodeUrl: raw.leetcodeUrl,
+    completed: raw.completed,
+    timeSpentMs: typeof raw.timeSpentMs === 'number' && Number.isFinite(raw.timeSpentMs)
+      ? Math.max(0, raw.timeSpentMs)
+      : null,
+  };
+}
+
+function sanitizeSession(value: unknown, username: string): MockInterview | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
+
+  const raw = value as Record<string, unknown>;
+  if (
+    typeof raw.id !== 'string' ||
+    typeof raw.targetCompany !== 'string' ||
+    typeof raw.generatedAt !== 'number' ||
+    !Number.isFinite(raw.generatedAt) ||
+    typeof raw.durationMs !== 'number' ||
+    !Number.isFinite(raw.durationMs) ||
+    typeof raw.accumulatedMs !== 'number' ||
+    !Number.isFinite(raw.accumulatedMs) ||
+    !Array.isArray(raw.problems) ||
+    !isStatus(raw.status)
+  ) {
+    return null;
+  }
+
+  const problems = raw.problems
+    .map((problem) => sanitizeProblem(problem))
+    .filter((problem): problem is MockProblem => problem !== null);
+
+  if (problems.length === 0) return null;
+
+  const sessionUsername = typeof raw.username === 'string' && raw.username.trim()
+    ? raw.username
+    : username;
+
+  if (sessionUsername !== username) return null;
+
+  const startedAt = typeof raw.startedAt === 'number' && Number.isFinite(raw.startedAt)
+    ? raw.startedAt
+    : null;
+
+  return {
+    id: raw.id,
+    username: sessionUsername,
+    generatedAt: raw.generatedAt,
+    targetCompany: raw.targetCompany,
+    durationMs: Math.max(1, raw.durationMs),
+    startedAt,
+    accumulatedMs: Math.max(0, raw.accumulatedMs),
+    problems,
+    status: raw.status,
+  };
+}
+
+export function loadSession(username: string): MockInterview | null {
   try {
     if (typeof window === 'undefined') return null;
-    const raw = localStorage.getItem(SESSION_KEY);
+    const raw = localStorage.getItem(getSessionKey(username));
     if (!raw) return null;
-    const parsed = JSON.parse(raw) as MockInterview;
-    // Basic shape guard
-    if (!parsed.id || !Array.isArray(parsed.problems)) return null;
-    return parsed;
+    return sanitizeSession(JSON.parse(raw), username);
   } catch {
     return null;
   }
@@ -69,45 +139,67 @@ export function loadSession(): MockInterview | null {
 export function saveSession(session: MockInterview): void {
   try {
     if (typeof window === 'undefined') return;
-    localStorage.setItem(SESSION_KEY, JSON.stringify(session));
+    localStorage.setItem(getSessionKey(session.username), JSON.stringify(session));
   } catch {
-    // Quota exceeded — silently continue
+    // Quota exceeded. Session remains in memory.
   }
 }
 
-export function clearSession(): void {
+export function clearSession(username: string): void {
   try {
     if (typeof window === 'undefined') return;
-    localStorage.removeItem(SESSION_KEY);
-  } catch { /* noop */ }
+    localStorage.removeItem(getSessionKey(username));
+  } catch {
+    // noop
+  }
 }
 
-// ─── Elapsed time helpers ─────────────────────────────────────────
-
-/**
- * Returns total elapsed ms for a session, accounting for pauses.
- * Uses wall-clock diff from startedAt rather than intervals to avoid drift.
- */
 export function getElapsedMs(session: MockInterview, nowMs = Date.now()): number {
-  if (!session.startedAt) return session.accumulatedMs;
+  if (!session.startedAt) return Math.max(0, session.accumulatedMs);
   if (session.status === 'paused' || session.status === 'finished') {
-    return session.accumulatedMs;
+    return Math.max(0, session.accumulatedMs);
   }
-  return session.accumulatedMs + (nowMs - session.startedAt);
+  return Math.max(0, session.accumulatedMs + (nowMs - session.startedAt));
 }
 
 export function getRemainingMs(session: MockInterview, nowMs = Date.now()): number {
   return Math.max(0, session.durationMs - getElapsedMs(session, nowMs));
 }
 
-export function formatTime(ms: number): string {
-  const totalSec = Math.ceil(ms / 1000);
-  const m = Math.floor(totalSec / 60);
-  const s = totalSec % 60;
-  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+export function toggleProblemCompletion(
+  session: MockInterview,
+  index: number,
+  nowMs = Date.now(),
+): MockInterview {
+  const elapsedMs = getElapsedMs(session, nowMs);
+  const allocatedMs = session.problems.reduce((sum, problem, problemIndex) => {
+    if (problemIndex === index || !problem.completed || problem.timeSpentMs === null) return sum;
+    return sum + problem.timeSpentMs;
+  }, 0);
+
+  return {
+    ...session,
+    problems: session.problems.map((problem, problemIndex) => {
+      if (problemIndex !== index) return problem;
+
+      return problem.completed
+        ? { ...problem, completed: false, timeSpentMs: null }
+        : {
+            ...problem,
+            completed: true,
+            timeSpentMs: Math.max(0, elapsedMs - allocatedMs),
+          };
+    }),
+  };
 }
 
-// ─── Problem selection ────────────────────────────────────────────
+export function formatTime(ms: number): string {
+  const safeMs = Number.isFinite(ms) ? Math.max(0, ms) : 0;
+  const totalSec = Math.ceil(safeMs / 1000);
+  const minutes = Math.floor(totalSec / 60);
+  const seconds = totalSec % 60;
+  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+}
 
 function toLeetCodeUrl(slug: string): string {
   return `https://leetcode.com/problems/${slug}/`;
@@ -117,30 +209,28 @@ function pickEasy(
   analytics: Analytics,
   srsStates: Record<string, SM2State>,
 ): MockProblem {
-  // Priority 1: due/overdue Easy problems with lowest retention (most forgotten)
-  const dueEasy = getDueProblems(srsStates, Date.now())
-    .filter(s => s.difficulty === 'Easy')
+  const dueEasy = getDueProblems(srsStates, Date.now(), Number.POSITIVE_INFINITY)
+    .filter((state) => state.difficulty === 'Easy')
     .sort((a, b) => getRetentionPercent(a) - getRetentionPercent(b));
 
   if (dueEasy.length > 0) {
-    const s = dueEasy[0];
+    const state = dueEasy[0];
     return {
-      slug: s.slug,
-      title: s.title,
+      slug: state.slug,
+      title: state.title,
       difficulty: 'Easy',
-      topic: s.topics[0] ?? 'General',
-      reason: `Retention at ${getRetentionPercent(s)}% — good warm-up to rebuild this one.`,
-      leetcodeUrl: toLeetCodeUrl(s.slug),
+      topic: state.topics[0] ?? 'General',
+      reason: `Retention at ${getRetentionPercent(state)}% — good warm-up to rebuild this one.`,
+      leetcodeUrl: toLeetCodeUrl(state.slug),
       completed: false,
       timeSpentMs: null,
     };
   }
 
-  // Priority 2: Easy from recommendedProblems matching a weak topic
-  const weakTopicNames = new Set(analytics.weakTopics.map(t => t.name.toLowerCase()));
+  const weakTopicNames = new Set(analytics.weakTopics.map((topic) => topic.name.toLowerCase()));
   const weakEasy = analytics.recommendedProblems.find(
-    p => p.difficulty === 'Easy' &&
-    (weakTopicNames.has(p.primaryTopic.toLowerCase()) || weakTopicNames.size === 0)
+    (problem) => problem.difficulty === 'Easy'
+      && (weakTopicNames.has(problem.primaryTopic.toLowerCase()) || weakTopicNames.size === 0),
   );
 
   if (weakEasy) {
@@ -156,8 +246,7 @@ function pickEasy(
     };
   }
 
-  // Priority 3: any Easy from recommendedProblems
-  const anyEasy = analytics.recommendedProblems.find(p => p.difficulty === 'Easy');
+  const anyEasy = analytics.recommendedProblems.find((problem) => problem.difficulty === 'Easy');
   if (anyEasy) {
     return {
       slug: anyEasy.slug,
@@ -171,7 +260,6 @@ function pickEasy(
     };
   }
 
-  // Fallback: well-known beginner problem
   return {
     slug: 'two-sum',
     title: 'Two Sum',
@@ -189,12 +277,11 @@ function pickMedium(
   targetCompany: string,
 ): MockProblem {
   const primaryWeak = analytics.weakTopics[0]?.name ?? '';
-  const mediums = analytics.recommendedProblems.filter(p => p.difficulty === 'Medium');
+  const mediums = analytics.recommendedProblems.filter((problem) => problem.difficulty === 'Medium');
 
-  // Best: matches weak topic + target company
   const companyWeak = mediums.find(
-    p => p.companies.includes(targetCompany) &&
-    p.primaryTopic.toLowerCase().includes(primaryWeak.toLowerCase())
+    (problem) => problem.companies.includes(targetCompany)
+      && problem.primaryTopic.toLowerCase().includes(primaryWeak.toLowerCase()),
   );
   if (companyWeak) {
     return {
@@ -209,8 +296,7 @@ function pickMedium(
     };
   }
 
-  // Second: just matches target company
-  const companyOnly = mediums.find(p => p.companies.includes(targetCompany));
+  const companyOnly = mediums.find((problem) => problem.companies.includes(targetCompany));
   if (companyOnly) {
     return {
       slug: companyOnly.slug,
@@ -224,9 +310,8 @@ function pickMedium(
     };
   }
 
-  // Third: highest matchScore Medium from weak topic
   const weakMatch = mediums
-    .filter(p => p.primaryTopic.toLowerCase().includes(primaryWeak.toLowerCase()))
+    .filter((problem) => problem.primaryTopic.toLowerCase().includes(primaryWeak.toLowerCase()))
     .sort((a, b) => b.matchScore - a.matchScore)[0];
   if (weakMatch) {
     return {
@@ -241,15 +326,14 @@ function pickMedium(
     };
   }
 
-  // Fallback: top matchScore Medium
-  const best = mediums.sort((a, b) => b.matchScore - a.matchScore)[0];
+  const best = [...mediums].sort((a, b) => b.matchScore - a.matchScore)[0];
   if (best) {
     return {
       slug: best.slug,
       title: best.title,
       difficulty: 'Medium',
       topic: best.primaryTopic,
-      reason: best.reason || `Highest-priority Medium in your queue.`,
+      reason: best.reason || 'Highest-priority Medium in your queue.',
       leetcodeUrl: toLeetCodeUrl(best.slug),
       completed: false,
       timeSpentMs: null,
@@ -274,18 +358,18 @@ function pickHard(
   mediumSlug: string,
 ): MockProblem {
   const hards = analytics.recommendedProblems
-    .filter(p => p.difficulty === 'Hard' && p.slug !== easySlug && p.slug !== mediumSlug)
+    .filter((problem) => problem.difficulty === 'Hard' && problem.slug !== easySlug && problem.slug !== mediumSlug)
     .sort((a, b) => b.matchScore - a.matchScore);
 
   if (hards.length > 0) {
-    const h = hards[0];
+    const problem = hards[0];
     return {
-      slug: h.slug,
-      title: h.title,
+      slug: problem.slug,
+      title: problem.title,
       difficulty: 'Hard',
-      topic: h.primaryTopic,
-      reason: `Push your limits — ${h.primaryTopic} is a gap worth closing under time pressure.`,
-      leetcodeUrl: toLeetCodeUrl(h.slug),
+      topic: problem.primaryTopic,
+      reason: `Push your limits — ${problem.primaryTopic} is a gap worth closing under time pressure.`,
+      leetcodeUrl: toLeetCodeUrl(problem.slug),
       completed: false,
       timeSpentMs: null,
     };
@@ -303,22 +387,22 @@ function pickHard(
   };
 }
 
-// ─── Main generator ───────────────────────────────────────────────
-
 export function generateMockInterview(
   analytics: Analytics,
   srsStates: Record<string, SM2State>,
+  username: string,
   targetCompany: string,
   durationMin: InterviewDuration,
 ): MockInterview {
-  const easy   = pickEasy(analytics, srsStates);
+  const easy = pickEasy(analytics, srsStates);
   const medium = pickMedium(analytics, targetCompany);
-  const hard   = pickHard(analytics, easy.slug, medium.slug);
+  const hard = pickHard(analytics, easy.slug, medium.slug);
 
   return {
     id: typeof crypto !== 'undefined' && crypto.randomUUID
       ? crypto.randomUUID()
       : String(Date.now()),
+    username,
     generatedAt: Date.now(),
     targetCompany,
     durationMs: durationMin * 60 * 1000,

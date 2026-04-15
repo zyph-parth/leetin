@@ -26,12 +26,22 @@ export interface LeetCodeProfile {
   languageStats: LanguageStat[];
 }
 
+export type SubmissionDifficulty = 'Easy' | 'Medium' | 'Hard';
+
+export interface TopicTag {
+  name: string;
+  slug: string;
+}
+
 export interface Submission {
   title: string;
   titleSlug: string;
   timestamp: string;
   statusDisplay: string;
   lang: string;
+  difficulty?: SubmissionDifficulty;
+  topicTags?: TopicTag[];
+  frontendId?: number;
 }
 
 export interface TagStat {
@@ -58,84 +68,199 @@ interface DifficultyCount {
   submissions?: number;
 }
 
-interface MatchedUserStatsResponse {
-  matchedUser?: {
-    username: string;
-    profile?: {
-      realName?: string;
-      userAvatar?: string;
-      ranking?: number;
-    };
-    submitStats?: {
-      acSubmissionNum?: DifficultyCount[];
-      totalSubmissionNum?: DifficultyCount[];
-    };
+interface ContestRanking {
+  rating?: number;
+  attendedContestsCount?: number;
+  globalRanking?: number;
+  topPercentage?: number;
+}
+
+interface MatchedUserData {
+  username: string;
+  profile?: {
+    realName?: string;
+    userAvatar?: string;
+    ranking?: number;
   };
+  submitStats?: {
+    acSubmissionNum?: DifficultyCount[];
+    totalSubmissionNum?: DifficultyCount[];
+  };
+  userCalendar?: {
+    submissionCalendar?: string;
+    streak?: number;
+    totalActiveDays?: number;
+  };
+  badges?: Badge[];
+  languageProblemCount?: LanguageStat[];
+  tagProblemCounts?: {
+    advanced?: TagStat[];
+    intermediate?: TagStat[];
+    fundamental?: TagStat[];
+  };
+}
+
+interface ProfileQueryData {
+  matchedUser?: MatchedUserData | null;
   allQuestionsCount?: DifficultyCount[];
-}
-
-interface CalendarResponse {
-  matchedUser?: {
-    userCalendar?: {
-      submissionCalendar?: string;
-      streak?: number;
-      totalActiveDays?: number;
-    };
-  };
-}
-
-interface RecentSubmissionsResponse {
   recentSubmissionList?: Submission[];
+  userContestRanking?: ContestRanking | null;
 }
 
-interface ContestResponse {
-  userContestRanking?: {
-    rating?: number;
-    attendedContestsCount?: number;
-    globalRanking?: number;
-    topPercentage?: number;
-  };
+interface QuestionDetail {
+  questionFrontendId?: string;
+  difficulty?: SubmissionDifficulty;
+  topicTags?: TopicTag[];
 }
 
-interface BadgeResponse {
-  matchedUser?: {
-    badges?: Badge[];
-  };
-}
-
-interface LanguageResponse {
-  matchedUser?: {
-    languageProblemCount?: LanguageStat[];
-  };
-}
-
-interface TagResponse {
-  matchedUser?: {
-    tagProblemCounts?: {
-      advanced?: TagStat[];
-      intermediate?: TagStat[];
-      fundamental?: TagStat[];
-    };
-  };
+export class LeetCodeApiError extends Error {
+  constructor(message: string, public readonly status: number) {
+    super(message);
+    this.name = 'LeetCodeApiError';
+  }
 }
 
 const LEETCODE_API = 'https://leetcode.com/graphql';
+const MS_PER_DAY = 86_400_000;
+const RECENT_SUBMISSION_LIMIT = 250;
+const QUESTION_DETAIL_BATCH_SIZE = 40;
 
-async function gql(query: string, variables: Record<string, unknown> = {}) {
-  const res = await fetch(LEETCODE_API, {
+async function gql<T>(query: string, variables: Record<string, unknown> = {}): Promise<T> {
+  const requestInit: RequestInit & { next?: { revalidate: number } } = {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Referer': 'https://leetcode.com' },
+    headers: { 'Content-Type': 'application/json', Referer: 'https://leetcode.com' },
     body: JSON.stringify({ query, variables }),
-    next: { revalidate: 300 } // Cache the response for 5 minutes (300 seconds)
-  });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  const json = await res.json();
-  if (json.errors) throw new Error(json.errors[0]?.message || 'GraphQL error');
+    next: { revalidate: 300 },
+  };
+
+  const res = await fetch(LEETCODE_API, requestInit);
+
+  if (!res.ok) {
+    if (res.status === 429) {
+      throw new LeetCodeApiError('LeetCode is rate-limiting requests right now. Please try again shortly.', 429);
+    }
+
+    throw new LeetCodeApiError(`LeetCode request failed (${res.status}).`, 502);
+  }
+
+  const json = (await res.json()) as { data?: T; errors?: Array<{ message?: string }> };
+
+  if (json.errors?.length) {
+    const message = json.errors[0]?.message || 'GraphQL error';
+    const status = /not found|does not exist/i.test(message) ? 404 : 502;
+    throw new LeetCodeApiError(message, status);
+  }
+
+  if (!json.data) {
+    throw new LeetCodeApiError('LeetCode returned an empty response.', 502);
+  }
+
   return json.data;
 }
 
+function getDifficultyMetric(
+  counts: DifficultyCount[],
+  difficulty: string,
+  key: 'count' | 'submissions',
+): number {
+  const entry = counts.find((count) => count.difficulty === difficulty);
+  const value = entry?.[key];
+  return typeof value === 'number' ? value : 0;
+}
+
+function toLocalDayStart(tsSeconds: number): number {
+  const d = new Date(tsSeconds * 1000);
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+}
+
+function computeMaxStreak(submissionCalendar: Record<string, number>): number {
+  const activeDays = Array.from(
+    Object.entries(submissionCalendar).reduce<Map<number, number>>((days, [ts, count]) => {
+      if (count <= 0) return days;
+      const localDayStart = toLocalDayStart(Number(ts));
+      days.set(localDayStart, (days.get(localDayStart) ?? 0) + count);
+      return days;
+    }, new Map()),
+  )
+    .map(([dayStart]) => dayStart)
+    .sort((a, b) => a - b);
+
+  let maxStreak = 0;
+  let streak = 0;
+  let previousDayStart: number | null = null;
+
+  for (const dayStart of activeDays) {
+    if (previousDayStart === null) {
+      streak = 1;
+    } else {
+      const dayDiff = Math.round((dayStart - previousDayStart) / MS_PER_DAY);
+      streak = dayDiff === 1 ? streak + 1 : 1;
+    }
+
+    maxStreak = Math.max(maxStreak, streak);
+    previousDayStart = dayStart;
+  }
+
+  return maxStreak;
+}
+
+async function fetchRecentProblemDetails(submissions: Submission[]): Promise<Record<string, QuestionDetail>> {
+  const acceptedSlugs = Array.from(
+    new Set(
+      submissions
+        .filter((submission) => submission.statusDisplay === 'Accepted' && submission.titleSlug)
+        .map((submission) => submission.titleSlug),
+    ),
+  );
+
+  if (acceptedSlugs.length === 0) return {};
+
+  const detailsBySlug: Record<string, QuestionDetail> = {};
+
+  for (let start = 0; start < acceptedSlugs.length; start += QUESTION_DETAIL_BATCH_SIZE) {
+    const slugBatch = acceptedSlugs.slice(start, start + QUESTION_DETAIL_BATCH_SIZE);
+    const detailFields = slugBatch
+      .map(
+        (slug, index) => `
+          q${index}: question(titleSlug: "${slug}") {
+            questionFrontendId
+            difficulty
+            topicTags { name slug }
+          }
+        `,
+      )
+      .join('\n');
+
+    const detailQuery = `query {\n${detailFields}\n}`;
+    const detailData = await gql<Record<string, QuestionDetail | null>>(detailQuery);
+
+    for (const [index, slug] of slugBatch.entries()) {
+      const detail = detailData[`q${index}`];
+      if (detail) detailsBySlug[slug] = detail;
+    }
+  }
+
+  return detailsBySlug;
+}
+
+function attachSubmissionDetails(
+  submissions: Submission[],
+  detailsBySlug: Record<string, QuestionDetail>,
+): Submission[] {
+  return submissions.map((submission) => {
+    const detail = detailsBySlug[submission.titleSlug];
+    const frontendId = detail?.questionFrontendId ? Number(detail.questionFrontendId) : NaN;
+
+    return {
+      ...submission,
+      difficulty: detail?.difficulty,
+      topicTags: detail?.topicTags ?? [],
+      frontendId: Number.isFinite(frontendId) ? frontendId : undefined,
+    };
+  });
+}
+
 export async function fetchLeetCodeProfile(username: string): Promise<LeetCodeProfile> {
-  // Combine all 7 separate requests into one single GraphQL query
   const query = `
     query($u: String!, $l: Int!) {
       matchedUser(username: $u) {
@@ -156,73 +281,57 @@ export async function fetchLeetCodeProfile(username: string): Promise<LeetCodePr
       }
       allQuestionsCount { difficulty count }
       recentSubmissionList(username: $u, limit: $l) {
-        title titleSlug timestamp statusDisplay lang
+        title
+        titleSlug
+        timestamp
+        statusDisplay
+        lang
       }
       userContestRanking(username: $u) {
-        rating attendedContestsCount globalRanking topPercentage
+        rating
+        attendedContestsCount
+        globalRanking
+        topPercentage
       }
     }
   `;
 
-  // Make 1 single network request instead of 7
-  const data = await gql(query, { u: username, l: 50 });
+  const data = await gql<ProfileQueryData>(query, { u: username, l: RECENT_SUBMISSION_LIMIT });
 
-  const user = data?.matchedUser;
-  if (!user) throw new Error(`User "${username}" not found on LeetCode`);
+  const user = data.matchedUser;
+  if (!user) {
+    throw new LeetCodeApiError(`User "${username}" not found on LeetCode.`, 404);
+  }
 
-  const acNums = user.submitStats?.acSubmissionNum || [];
-  const totalNums = user.submitStats?.totalSubmissionNum || [];
-  const allQ = data?.allQuestionsCount || [];
+  const recentSubmissionsRaw = data.recentSubmissionList ?? [];
+  let submissionDetails: Record<string, QuestionDetail> = {};
+  try {
+    submissionDetails = await fetchRecentProblemDetails(recentSubmissionsRaw);
+  } catch {
+    submissionDetails = {};
+  }
+  const recentSubmissions = attachSubmissionDetails(recentSubmissionsRaw, submissionDetails);
 
-  const getSolved = (d: string) => acNums.find((x: any) => x.difficulty === d)?.count || 0;
-  const getTotalSubs = (d: string) => totalNums.find((x: any) => x.difficulty === d)?.submissions || 0;
-  const getTotal = (d: string) => allQ.find((x: any) => x.difficulty === d)?.count || 0;
+  const acNums = user.submitStats?.acSubmissionNum ?? [];
+  const totalNums = user.submitStats?.totalSubmissionNum ?? [];
+  const allQuestions = data.allQuestionsCount ?? [];
 
-  const totalSolved = getSolved('All');
-  const totalSubmissions = getTotalSubs('All');
+  const totalSolved = getDifficultyMetric(acNums, 'All', 'count');
+  const totalSubmissions = getDifficultyMetric(totalNums, 'All', 'submissions');
   const acceptanceRate = totalSubmissions > 0
     ? Math.round((totalSolved / totalSubmissions) * 100)
     : 0;
 
-  const rawCal = user.userCalendar?.submissionCalendar || '{}';
+  const rawCalendar = user.userCalendar?.submissionCalendar ?? '{}';
   let submissionCalendar: Record<string, number> = {};
-  try { submissionCalendar = JSON.parse(rawCal); } catch {}
-
-  const currentStreak = user.userCalendar?.streak || 0;
-  const totalActiveDays = user.userCalendar?.totalActiveDays || 0;
-
-  const sortedDays = Object.entries(submissionCalendar)
-    .sort(([a], [b]) => parseInt(a) - parseInt(b));
-  let maxStreak = 0, streak = 0;
-  let prevTs = 0;
-  for (const [ts, count] of sortedDays) {
-    const dayTs = parseInt(ts);
-    if (!prevTs) {
-      streak = (count as number) > 0 ? 1 : 0;
-    } else {
-      const dayDiff = Math.round((dayTs - prevTs) / 86400);
-      if (dayDiff === 1 && (count as number) > 0) {
-        streak++;
-      } else if (dayDiff !== 0) {
-        streak = (count as number) > 0 ? 1 : 0;
-      }
-    }
-    maxStreak = Math.max(maxStreak, streak);
-    prevTs = dayTs;
+  try {
+    submissionCalendar = JSON.parse(rawCalendar) as Record<string, number>;
+  } catch {
+    submissionCalendar = {};
   }
 
-  const recentSubmissions: Submission[] = data?.recentSubmissionList || [];
-  const contest = data?.userContestRanking;
-  const badges: Badge[] = user.badges || [];
-  const languageStats: LanguageStat[] = (user.languageProblemCount || [])
-    .sort((a: LanguageStat, b: LanguageStat) => b.problemsSolved - a.problemsSolved);
-
+  const contest = data.userContestRanking;
   const tagCounts = user.tagProblemCounts;
-  const tagStats = {
-    advanced: (tagCounts?.advanced || []).sort((a: TagStat, b: TagStat) => b.problemsSolved - a.problemsSolved),
-    intermediate: (tagCounts?.intermediate || []).sort((a: TagStat, b: TagStat) => b.problemsSolved - a.problemsSolved),
-    fundamental: (tagCounts?.fundamental || []).sort((a: TagStat, b: TagStat) => b.problemsSolved - a.problemsSolved),
-  };
 
   return {
     username: user.username,
@@ -230,25 +339,29 @@ export async function fetchLeetCodeProfile(username: string): Promise<LeetCodePr
     avatar: user.profile?.userAvatar || '',
     ranking: user.profile?.ranking || 0,
     totalSolved,
-    easySolved: getSolved('Easy'),
-    mediumSolved: getSolved('Medium'),
-    hardSolved: getSolved('Hard'),
-    totalQuestions: getTotal('All'),
-    easyTotal: getTotal('Easy'),
-    mediumTotal: getTotal('Medium'),
-    hardTotal: getTotal('Hard'),
+    easySolved: getDifficultyMetric(acNums, 'Easy', 'count'),
+    mediumSolved: getDifficultyMetric(acNums, 'Medium', 'count'),
+    hardSolved: getDifficultyMetric(acNums, 'Hard', 'count'),
+    totalQuestions: getDifficultyMetric(allQuestions, 'All', 'count'),
+    easyTotal: getDifficultyMetric(allQuestions, 'Easy', 'count'),
+    mediumTotal: getDifficultyMetric(allQuestions, 'Medium', 'count'),
+    hardTotal: getDifficultyMetric(allQuestions, 'Hard', 'count'),
     acceptanceRate,
     submissionCalendar,
-    totalActiveDays,
-    maxStreak,
-    currentStreak,
+    totalActiveDays: user.userCalendar?.totalActiveDays || 0,
+    maxStreak: computeMaxStreak(submissionCalendar),
+    currentStreak: user.userCalendar?.streak || 0,
     recentSubmissions,
-    tagStats,
+    tagStats: {
+      advanced: (tagCounts?.advanced ?? []).sort((a, b) => b.problemsSolved - a.problemsSolved),
+      intermediate: (tagCounts?.intermediate ?? []).sort((a, b) => b.problemsSolved - a.problemsSolved),
+      fundamental: (tagCounts?.fundamental ?? []).sort((a, b) => b.problemsSolved - a.problemsSolved),
+    },
     contestRating: Math.round(contest?.rating || 0),
     contestAttended: contest?.attendedContestsCount || 0,
     contestGlobalRanking: contest?.globalRanking || 0,
     topPercentage: contest?.topPercentage || 0,
-    badges,
-    languageStats,
+    badges: user.badges ?? [],
+    languageStats: (user.languageProblemCount ?? []).sort((a, b) => b.problemsSolved - a.problemsSolved),
   };
 }

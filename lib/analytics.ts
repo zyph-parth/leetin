@@ -98,6 +98,7 @@ export interface Analytics {
 }
 
 interface AnalyticsOptions {
+  nowMs?: number;
   srsStates?: Record<string, SM2State>;
   targetCompany?: string;
 }
@@ -109,6 +110,13 @@ interface TopicCatalogEntry {
   topic: string;
   subpatterns: string[];
   companies: string[];
+}
+
+interface TopicRetentionEntry {
+  topic: string;
+  avgRetention: number;
+  count: number;
+  dueCount: number;
 }
 
 const COMPANY_TOPICS: Record<string, { topics: string[]; logo: string }> = {
@@ -371,27 +379,54 @@ function getTopicFamily(topic: string): string {
   return topic;
 }
 
+function buildLocalDayHistory(calendar: Record<string, number>): Map<number, number> {
+  return Object.entries(calendar).reduce<Map<number, number>>((history, [ts, count]) => {
+    const date = new Date(parseInt(ts, 10) * 1000);
+    const dayStart = new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+    history.set(dayStart, (history.get(dayStart) ?? 0) + count);
+    return history;
+  }, new Map());
+}
+
+function buildRetentionFamilyMap(
+  retentionBreakdown: TopicRetentionEntry[],
+): Map<string, TopicRetentionEntry> {
+  const aggregated = new Map<string, { weightedRetention: number; count: number; dueCount: number }>();
+
+  for (const entry of retentionBreakdown) {
+    const family = getTopicFamily(entry.topic);
+    const current = aggregated.get(family) ?? { weightedRetention: 0, count: 0, dueCount: 0 };
+
+    current.weightedRetention += entry.avgRetention * entry.count;
+    current.count += entry.count;
+    current.dueCount += entry.dueCount;
+    aggregated.set(family, current);
+  }
+
+  return new Map(
+    Array.from(aggregated.entries()).map(([family, value]) => [
+      family,
+      {
+        topic: family,
+        avgRetention: Math.round(value.weightedRetention / value.count),
+        count: value.count,
+        dueCount: value.dueCount,
+      },
+    ]),
+  );
+}
+
 export function computeAnalytics(profile: LeetCodeProfile, options: AnalyticsOptions = {}): Analytics {
-  const { srsStates = {}, targetCompany } = options;
+  const { nowMs = Date.now(), srsStates = {}, targetCompany } = options;
   const cal = profile.submissionCalendar ?? {};
+  const localDayHistory = buildLocalDayHistory(cal);
 
   const getNDays = (n: number): number[] => {
     const result: number[] = new Array(n).fill(0);
-    const history = new Map<string, number>();
-    
-    // Bucket Leetcode's timestamps by local YYYY-MM-DD
-    // This entirely avoids timezone/UTC mismatching issues
-    Object.entries(cal).forEach(([ts, count]) => {
-      const d = new Date(parseInt(ts, 10) * 1000);
-      const key = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
-      history.set(key, (history.get(key) ?? 0) + count);
-    });
-
-    const now = new Date();
+    const now = new Date(nowMs);
     for (let i = n - 1; i >= 0; i--) {
-      const d = new Date(now.getTime() - i * 86_400_000);
-      const key = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
-      result[n - 1 - i] = history.get(key) ?? 0;
+      const day = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i);
+      result[n - 1 - i] = localDayHistory.get(day.getTime()) ?? 0;
     }
     return result;
   };
@@ -486,12 +521,13 @@ export function computeAnalytics(profile: LeetCodeProfile, options: AnalyticsOpt
     : '';
 
   const dayTotals = new Array(7).fill(0);
-  Object.entries(cal).forEach(([ts, count]) => {
-    const d = new Date(parseInt(ts, 10) * 1000);
-    dayTotals[d.getUTCDay()] += count;
+  localDayHistory.forEach((count, dayStart) => {
+    dayTotals[new Date(dayStart).getDay()] += count;
   });
   const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-  const peakDay = dayNames[dayTotals.indexOf(Math.max(...dayTotals))];
+  const peakDay = Math.max(...dayTotals) > 0
+    ? dayNames[dayTotals.indexOf(Math.max(...dayTotals))]
+    : 'No activity yet';
 
   const l30 = sum(last30);
   const p30 = sum(prev30);
@@ -584,13 +620,14 @@ export function computeAnalytics(profile: LeetCodeProfile, options: AnalyticsOpt
   const bestCompanyScore = sortedCompanies[0]?.readinessScore || 0;
   const selectedCompany = availableCompanies.includes(targetCompany ?? '') ? (targetCompany as string) : bestCompanyMatch;
 
-  const retentionBreakdown = getTopicRetentionBreakdown(srsStates, Date.now());
-  const retentionMap = new Map(retentionBreakdown.map((entry) => [getTopicFamily(entry.topic), entry]));
+  const retentionBreakdown = getTopicRetentionBreakdown(srsStates, nowMs);
+  const retentionMap = buildRetentionFamilyMap(retentionBreakdown);
   const recentAcceptedSlugs = new Set(
     profile.recentSubmissions
       .filter((submission) => submission.statusDisplay === 'Accepted')
       .map((submission) => submission.titleSlug),
   );
+  const solvedProblemSlugs = new Set([...Object.keys(srsStates), ...recentAcceptedSlugs]);
 
   const topicRecords = allTopics
     .map((topic) => ({
@@ -694,7 +731,7 @@ export function computeAnalytics(profile: LeetCodeProfile, options: AnalyticsOpt
 
   const buildRecommendations = (focusTopic?: string): RecommendedProblem[] => {
     return PROBLEM_CATALOG
-      .filter((problem) => !recentAcceptedSlugs.has(problem.slug))
+      .filter((problem) => !solvedProblemSlugs.has(problem.slug))
       .map((problem) => {
         const topicStat = topicStatsMap.get(problem.topic);
         const retention = retentionMap.get(problem.topic);
@@ -781,7 +818,7 @@ export function computeAnalytics(profile: LeetCodeProfile, options: AnalyticsOpt
       weakSubpatterns,
       strongSignals,
       recommendedProblems: buildRecommendations(topic.family),
-      summary: retention?.avgRetention && retention.avgRetention < 60
+      summary: retention && retention.avgRetention < 60
         ? `${topic.family} is slipping in memory. Review plus fresh drills will pay off immediately.`
         : `${topic.family} can still become a stronger interview differentiator with deeper pattern coverage.`,
     };
@@ -792,7 +829,7 @@ export function computeAnalytics(profile: LeetCodeProfile, options: AnalyticsOpt
     const startIdx = 6 + i * 7;
     const weekSubs = last90.slice(startIdx, startIdx + 7);
     const daysFromNow = (11 - i) * 7;
-    const endDate = new Date(Date.now() - daysFromNow * 86_400_000);
+    const endDate = new Date(nowMs - daysFromNow * 86_400_000);
     weeklyData.push({
       week: endDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
       count: sum(weekSubs),

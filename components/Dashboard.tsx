@@ -1,11 +1,11 @@
 'use client';
 
 import Image from 'next/image';
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { LeetCodeProfile } from '@/lib/leetcode';
 import { computeAnalytics } from '@/lib/analytics';
 import type { Analytics, TopicDeepDive } from '@/lib/analytics';
-import { loadSRSData, mergeFreshProblems } from '@/lib/srs-store';
+import { loadSRSData, mergeFreshProblems, saveSingleState } from '@/lib/srs-store';
 import type { SM2State } from '@/lib/srs';
 import {
   Area, AreaChart, CartesianGrid, PolarAngleAxis, PolarGrid,
@@ -52,6 +52,10 @@ const VERDICT_CONFIG: Record<string, { color: string; bg: string; border: string
   'Keep Building':  { color: C.textSecondary, bg: C.surface2, border: C.border,   glow: 'none' },
 };
 
+function getProblemUrl(slug: string): string {
+  return `https://leetcode.com/problems/${slug}/`;
+}
+
 /* ─── Small shared components ───────────────────────────────── */
 function Label({ text }: { text: string }) {
   return (
@@ -84,10 +88,73 @@ function Chip({ text, tone = 'neutral' }: { text: string; tone?: 'neutral' | 'ac
   );
 }
 
-function Card({ children, delay = 0, style = {} }: { children: React.ReactNode; delay?: number; style?: React.CSSProperties }) {
+function ProblemLink({
+  slug,
+  label = 'Open problem',
+}: {
+  slug: string;
+  label?: string;
+}) {
+  return (
+    <a
+      href={getProblemUrl(slug)}
+      target="_blank"
+      rel="noopener noreferrer"
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: '6px',
+        padding: '8px 12px',
+        background: C.surface,
+        border: `1px solid ${C.border}`,
+        borderRadius: '9px',
+        color: C.textPrimary,
+        fontFamily: 'DM Mono, monospace',
+        fontSize: '11px',
+        textDecoration: 'none',
+        whiteSpace: 'nowrap',
+      }}
+    >
+      {label}
+      <span aria-hidden="true">↗</span>
+    </a>
+  );
+}
+
+function QuickJumpLink({
+  href,
+  label,
+  meta,
+}: {
+  href: string;
+  label: string;
+  meta: string;
+}) {
+  return (
+    <a href={href} className="dashboard-quick-link">
+      <span className="dashboard-quick-label">{label}</span>
+      <span className="dashboard-quick-meta">{meta}</span>
+    </a>
+  );
+}
+
+function Card({
+  children,
+  delay = 0,
+  style = {},
+  id,
+  className = '',
+}: {
+  children: React.ReactNode;
+  delay?: number;
+  style?: React.CSSProperties;
+  id?: string;
+  className?: string;
+}) {
   return (
     <div
-      className="fu"
+      id={id}
+      className={`fu ${className}`.trim()}
       style={{
         background: C.surface,
         border: `1px solid ${C.border}`,
@@ -136,7 +203,7 @@ function StatBlock({ label, value }: { label: string; value: string }) {
 
 function DeepDivePanel({ deepDive }: { deepDive: TopicDeepDive }) {
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: 'minmax(280px, 1.1fr) minmax(280px, 1fr)', gap: '16px' }}>
+    <div className="dashboard-deep-dive-grid">
       {/* Left */}
       <div style={{ background: C.surface2, border: `1px solid ${C.border}`, borderRadius: '14px', padding: '20px' }}>
         <Label text="Readiness Snapshot" />
@@ -179,7 +246,7 @@ function DeepDivePanel({ deepDive }: { deepDive: TopicDeepDive }) {
         <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
           {deepDive.recommendedProblems.map((p) => (
             <div key={p.slug} style={{ padding: '14px', background: C.surface2, borderRadius: '12px', border: `1px solid ${C.border}` }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', gap: '10px', marginBottom: '8px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: '10px', marginBottom: '8px', alignItems: 'flex-start' }}>
                 <div>
                   <div style={{ fontFamily: 'DM Serif Display, serif', fontSize: '16px', color: C.textPrimary }}>{p.title}</div>
                   <div style={{ fontFamily: 'DM Mono, monospace', fontSize: '10px', color: C.textMuted }}>/problems/{p.slug}</div>
@@ -189,6 +256,12 @@ function DeepDivePanel({ deepDive }: { deepDive: TopicDeepDive }) {
               <p style={{ fontSize: '12px', color: C.textSecondary, lineHeight: 1.55, marginBottom: '8px' }}>{p.reason}</p>
               <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
                 {p.subpatterns.map((sp) => <Chip key={`${p.slug}-${sp}`} text={sp} />)}
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px', flexWrap: 'wrap', marginTop: '12px' }}>
+                <span style={{ fontSize: '10px', color: C.textMuted, fontFamily: 'DM Mono, monospace' }}>
+                  Match score {p.matchScore}%
+                </span>
+                <ProblemLink slug={p.slug} />
               </div>
             </div>
           ))}
@@ -209,19 +282,44 @@ const tooltipStyle = {
 
 /* ─── Main Dashboard ────────────────────────────────────────── */
 export default function Dashboard({ profile }: Props) {
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  const [srsReady, setSrsReady] = useState(false);
   const [srsStates, setSrsStates] = useState<Record<string, SM2State>>({});
   const [targetCompany, setTargetCompany] = useState('Google');
   const [selectedTopic, setSelectedTopic] = useState('');
 
   useEffect(() => {
+    const syncNow = () => setNowMs(Date.now());
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') syncNow();
+    };
+
+    const intervalId = window.setInterval(syncNow, 60_000);
+    window.addEventListener('focus', syncNow);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener('focus', syncNow);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, []);
+
+  useEffect(() => {
+    setSrsReady(false);
     const stored = loadSRSData(profile.username);
     const merged = mergeFreshProblems(profile.username, stored, profile);
     setSrsStates(merged);
+    setSrsReady(true);
   }, [profile]);
 
+  const handleSrsStateChange = useCallback((updated: SM2State) => {
+    setSrsStates((prev) => saveSingleState(profile.username, updated, prev));
+  }, [profile.username]);
+
   const analytics: Analytics = useMemo(
-    () => computeAnalytics(profile, { srsStates, targetCompany }),
-    [profile, srsStates, targetCompany],
+    () => computeAnalytics(profile, { nowMs, srsStates, targetCompany }),
+    [nowMs, profile, srsStates, targetCompany],
   );
 
   useEffect(() => {
@@ -253,7 +351,7 @@ export default function Dashboard({ profile }: Props) {
     analytics.solveVelocityTrend === 'decreasing' ? '↓' : '→';
 
   return (
-    <div style={{ maxWidth: '1160px', margin: '0 auto', padding: '0 28px 80px' }}>
+    <div className="dashboard-shell" style={{ maxWidth: '1160px', margin: '0 auto', padding: '0 28px 80px' }}>
       <style>{`
         @keyframes fadeUp {
           from { opacity: 0; transform: translateY(16px); }
@@ -266,13 +364,98 @@ export default function Dashboard({ profile }: Props) {
         @media (prefers-reduced-motion: reduce) {
           .fu { animation: none !important; opacity: 1 !important; }
         }
+        .dashboard-section {
+          scroll-margin-top: 88px;
+        }
+        .dashboard-profile-card {
+          display: flex;
+          align-items: center;
+          gap: 18px;
+        }
+        .dashboard-verdict-banner {
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+          gap: 32px;
+          align-items: center;
+        }
+        .dashboard-quick-nav {
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
+          gap: 10px;
+        }
+        .dashboard-quick-link {
+          display: flex;
+          flex-direction: column;
+          gap: 4px;
+          padding: 14px 16px;
+          background: ${C.surface2};
+          border: 1px solid ${C.border};
+          border-radius: 12px;
+          text-decoration: none;
+          transition: border-color 0.15s ease, transform 0.15s ease, background 0.15s ease;
+        }
+        .dashboard-quick-link:hover {
+          border-color: ${C.accentBorder};
+          background: ${C.accentLight};
+          transform: translateY(-1px);
+        }
+        .dashboard-quick-label {
+          font-family: 'DM Serif Display', serif;
+          font-size: 17px;
+          color: ${C.textPrimary};
+        }
+        .dashboard-quick-meta {
+          font-family: 'DM Mono', monospace;
+          font-size: 10px;
+          color: ${C.textMuted};
+          letter-spacing: 0.08em;
+          text-transform: uppercase;
+        }
+        .dashboard-deep-dive-grid {
+          display: grid;
+          grid-template-columns: minmax(280px, 1.1fr) minmax(280px, 1fr);
+          gap: 16px;
+        }
+        @media (max-width: 900px) {
+          .dashboard-profile-card {
+            flex-direction: column;
+            align-items: flex-start;
+          }
+          .dashboard-profile-stats {
+            width: 100%;
+            justify-content: space-between;
+          }
+          .dashboard-deep-dive-grid {
+            grid-template-columns: 1fr;
+          }
+        }
+        @media (max-width: 720px) {
+          .dashboard-shell {
+            padding: 0 18px 72px !important;
+          }
+          .dashboard-verdict-banner {
+            gap: 22px;
+          }
+          .dashboard-company-control {
+            width: 100%;
+            min-width: 0 !important;
+          }
+          .dashboard-footer-summary {
+            text-align: left !important;
+          }
+        }
+        @media (max-width: 560px) {
+          .dashboard-quick-nav {
+            grid-template-columns: 1fr;
+          }
+        }
       `}</style>
 
       {/* ── Profile header ───────────────────────────────────── */}
       <Card
         delay={0}
+        className="dashboard-profile-card dashboard-section"
         style={{
-          display: 'flex', alignItems: 'center', gap: '18px',
           marginBottom: '20px', padding: '22px 26px',
         }}
       >
@@ -308,7 +491,7 @@ export default function Dashboard({ profile }: Props) {
         </div>
 
         {/* Stat pills */}
-        <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', justifyContent: 'flex-end', flexShrink: 0 }}>
+        <div className="dashboard-profile-stats" style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', justifyContent: 'flex-end', flexShrink: 0 }}>
           {[
             { label: 'Rank', val: `#${profile.ranking?.toLocaleString() ?? '—'}` },
             { label: 'Solved', val: String(profile.totalSolved ?? 0) },
@@ -324,7 +507,7 @@ export default function Dashboard({ profile }: Props) {
 
       {/* ── Verdict banner ───────────────────────────────────── */}
       <div
-        className="fu"
+        className="fu dashboard-verdict-banner"
         style={{
           background: verdictStyle.bg,
           border: `1px solid ${verdictStyle.border}`,
@@ -332,10 +515,6 @@ export default function Dashboard({ profile }: Props) {
           padding: '32px',
           marginBottom: '16px',
           animationDelay: '70ms',
-          display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))',
-          gap: '32px',
-          alignItems: 'center',
           boxShadow: verdictStyle.glow,
         }}
       >
@@ -391,7 +570,33 @@ export default function Dashboard({ profile }: Props) {
       </div>
 
       {/* ── Recommendations ──────────────────────────────────── */}
-      <Card delay={130} style={{ padding: '26px', marginBottom: '16px' }}>
+      <Card delay={100} className="dashboard-section" style={{ padding: '18px 20px', marginBottom: '16px' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', alignItems: 'flex-start', flexWrap: 'wrap', marginBottom: '14px' }}>
+          <div>
+            <Label text="Quick Navigation" />
+            <div style={{ fontFamily: 'DM Serif Display, serif', fontSize: '20px', color: C.textPrimary, marginBottom: '4px' }}>
+              Jump straight to the part that matters
+            </div>
+            <p style={{ fontSize: '12px', color: C.textSecondary, lineHeight: 1.6 }}>
+              This dashboard is dense by design. These shortcuts make it easier to move between recommendations, practice, and progress views.
+            </p>
+          </div>
+        </div>
+        <div className="dashboard-quick-nav">
+          {[
+            { href: '#recommendations', label: 'Recommendations', meta: `${analytics.recommendedProblems.length} picks` },
+            { href: '#mock-interview', label: 'Mock Interview', meta: targetCompany },
+            { href: '#memory-srs', label: 'Memory SRS', meta: `${Object.keys(srsStates).length} tracked` },
+            { href: '#topic-deep-dive', label: 'Deep Dive', meta: `${analytics.deepDiveTopics.length} topics` },
+            { href: '#readiness', label: 'Readiness', meta: `${analytics.interviewReadiness}/100` },
+            { href: '#heatmap', label: 'Heatmap', meta: `${profile.totalActiveDays} active days` },
+          ].map((item) => (
+            <QuickJumpLink key={item.href} href={item.href} label={item.label} meta={item.meta} />
+          ))}
+        </div>
+      </Card>
+
+      <Card id="recommendations" delay={130} className="dashboard-section" style={{ padding: '26px', marginBottom: '16px' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: '16px', alignItems: 'flex-start', flexWrap: 'wrap', marginBottom: '20px' }}>
           <div>
             <Label text="Recommendation Engine" />
@@ -402,7 +607,7 @@ export default function Dashboard({ profile }: Props) {
               Ranked from your weak tags, memory decay, and the company you want to optimize for.
             </p>
           </div>
-          <div style={{ minWidth: '200px' }}>
+          <div className="dashboard-company-control" style={{ minWidth: '200px' }}>
             <Label text="Target Company" />
             <select
               value={targetCompany}
@@ -417,6 +622,9 @@ export default function Dashboard({ profile }: Props) {
             >
               {analytics.availableCompanies.map((c) => <option key={c} value={c}>{c}</option>)}
             </select>
+            <div style={{ fontSize: '11px', color: C.textMuted, marginTop: '8px', lineHeight: 1.5 }}>
+              The stack re-ranks instantly for the company you are targeting.
+            </div>
           </div>
         </div>
 
@@ -451,27 +659,40 @@ export default function Dashboard({ profile }: Props) {
               <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
                 {p.subpatterns.map((sp) => <Chip key={`${p.slug}-${sp}`} text={sp} />)}
               </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px', flexWrap: 'wrap', marginTop: '12px' }}>
+                <span style={{ fontSize: '10px', color: C.textMuted, fontFamily: 'DM Mono, monospace' }}>
+                  Match score {p.matchScore}%
+                </span>
+                <ProblemLink slug={p.slug} />
+              </div>
             </div>
           ))}
         </div>
       </Card>
 
       {/* ── Mock Interview ───────────────────────────────────── */}
-      <div className="fu" style={{ animationDelay: '160ms', marginBottom: '16px' }}>
+      <div id="mock-interview" className="fu dashboard-section" style={{ animationDelay: '160ms', marginBottom: '16px' }}>
         <MockInterviewPanel
           analytics={analytics}
           srsStates={srsStates}
+          username={profile.username}
           targetCompany={targetCompany}
         />
       </div>
 
       {/* ── SRS Panel ────────────────────────────────────────── */}
-      <div className="fu" style={{ animationDelay: '190ms', marginBottom: '16px' }}>
-        <SRSPanel profile={profile} />
+      <div id="memory-srs" className="fu dashboard-section" style={{ animationDelay: '190ms', marginBottom: '16px' }}>
+        <SRSPanel
+          profile={profile}
+          states={srsStates}
+          nowMs={nowMs}
+          ready={srsReady}
+          onStateChange={handleSrsStateChange}
+        />
       </div>
 
       {/* ── Topic Deep Dive ──────────────────────────────────── */}
-      <Card delay={250} style={{ padding: '26px', marginBottom: '16px' }}>
+      <Card id="topic-deep-dive" delay={250} className="dashboard-section" style={{ padding: '26px', marginBottom: '16px' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: '16px', alignItems: 'flex-start', flexWrap: 'wrap', marginBottom: '18px' }}>
           <div>
             <Label text="Topic Deep Dive" />
@@ -519,7 +740,7 @@ export default function Dashboard({ profile }: Props) {
       </Card>
 
       {/* ── Gaps + Readiness ─────────────────────────────────── */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '16px', marginBottom: '16px' }}>
+      <div id="readiness" className="dashboard-section" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '16px', marginBottom: '16px' }}>
         <Card delay={310} style={{ padding: '24px' }}>
           <Label text="Top Gaps" />
           <h2 style={{ fontFamily: 'DM Serif Display, serif', fontSize: '20px', marginBottom: '18px', color: C.textPrimary }}>
@@ -766,7 +987,7 @@ export default function Dashboard({ profile }: Props) {
       </Card>
 
       {/* ── Heatmap ──────────────────────────────────────────── */}
-      <Card delay={650} style={{ padding: '26px', marginBottom: '16px' }}>
+      <Card id="heatmap" delay={650} className="dashboard-section" style={{ padding: '26px', marginBottom: '16px' }}>
         <Label text="Activity Heatmap" />
         <h2 style={{ fontFamily: 'DM Serif Display, serif', fontSize: '20px', marginBottom: '4px', color: C.textPrimary }}>
           Year in practice
@@ -780,6 +1001,7 @@ export default function Dashboard({ profile }: Props) {
       {/* ── Footer stats ─────────────────────────────────────── */}
       <Card
         delay={690}
+        className="dashboard-section"
         style={{
           padding: '22px 26px',
           display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '16px',
@@ -796,7 +1018,7 @@ export default function Dashboard({ profile }: Props) {
             At {analytics.weeklyAvg} problems/week toward a 400-problem benchmark
           </div>
         </div>
-        <div style={{ textAlign: 'right' }}>
+        <div className="dashboard-footer-summary" style={{ textAlign: 'right' }}>
           <Label text="Topic Diversity" />
           <div style={{ fontFamily: 'DM Serif Display, serif', fontSize: '24px', color: C.textPrimary }}>{analytics.topicDiversity}%</div>
           <div style={{ fontSize: '12px', color: C.textSecondary, marginTop: '4px' }}>of 30 key areas covered</div>

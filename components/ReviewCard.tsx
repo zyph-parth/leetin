@@ -36,6 +36,8 @@ const DIFF_COLOR: Record<string, { text: string; bg: string; border: string }> =
 
 const RATINGS: { quality: ReviewQuality; label: string; desc: string; color: string; bg: string; border: string }[] = [
   { quality: 0, label: 'Blackout',  desc: 'Complete blank',         color: C.hard,   bg: C.hardLight,   border: C.hardBorder   },
+  { quality: 1, label: 'Severe',    desc: 'Barely recalled',        color: '#EA580C', bg: 'rgba(234,88,12,0.12)', border: 'rgba(234,88,12,0.3)' },
+  { quality: 2, label: 'Barely',    desc: 'Too much struggle',      color: C.medium, bg: C.mediumLight, border: C.mediumBorder },
   { quality: 3, label: 'Hard',      desc: 'Remembered with effort', color: '#D97706', bg: 'rgba(217,119,6,0.12)', border: 'rgba(217,119,6,0.3)' },
   { quality: 4, label: 'Good',      desc: 'Minor hesitation',       color: C.accent, bg: C.accentLight, border: C.accentBorder },
   { quality: 5, label: 'Easy',      desc: 'Perfect recall',         color: C.easy,   bg: C.easyLight,   border: C.easyBorder   },
@@ -69,18 +71,19 @@ function RetentionArc({ retention }: { retention: number }) {
 }
 
 export interface ReviewCardProps {
+  nowMs: number;
   state: SM2State;
   onRate: (slug: string, quality: ReviewQuality, updated: SM2State) => void;
   onSkip?: (slug: string) => void;
 }
 
-export default function ReviewCard({ state, onRate, onSkip }: ReviewCardProps) {
+export default function ReviewCard({ nowMs, state, onRate, onSkip }: ReviewCardProps) {
   const [revealed, setRevealed] = useState(false);
   const [rated, setRated] = useState(false);
   const [flipping, setFlipping] = useState(false);
 
-  const retention = useMemo(() => getRetentionPercent(state), [state]);
-  const daysOverdue = useMemo(() => getDaysOverdue(state), [state]);
+  const retention = useMemo(() => getRetentionPercent(state, nowMs), [nowMs, state]);
+  const daysOverdue = useMemo(() => getDaysOverdue(state, nowMs), [nowMs, state]);
   const diff = DIFF_COLOR[state.difficulty] ?? DIFF_COLOR['Medium'];
 
   function handleReveal() {
@@ -89,7 +92,7 @@ export default function ReviewCard({ state, onRate, onSkip }: ReviewCardProps) {
   }
 
   function handleRate(quality: ReviewQuality) {
-    const updated = updateSM2(state, quality);
+    const updated = updateSM2(state, quality, { nowMs: Date.now() });
     setRated(true);
     setTimeout(() => onRate(state.slug, quality, updated), 300);
   }
@@ -122,9 +125,47 @@ export default function ReviewCard({ state, onRate, onSkip }: ReviewCardProps) {
         transformOrigin: 'center top',
       }}
     >
+      <style>{`
+        .review-card-front {
+          display: flex;
+          align-items: flex-start;
+          gap: 14px;
+        }
+        .review-card-actions {
+          display: flex;
+          gap: 8px;
+          flex-shrink: 0;
+        }
+        .review-rating-grid {
+          display: flex;
+          gap: 8px;
+          flex-wrap: wrap;
+        }
+        @media (max-width: 720px) {
+          .review-card-front {
+            flex-direction: column;
+          }
+          .review-card-actions {
+            width: 100%;
+            justify-content: flex-end;
+          }
+        }
+        @media (max-width: 520px) {
+          .review-card-actions {
+            justify-content: stretch;
+          }
+          .review-card-actions button {
+            flex: 1;
+          }
+          .review-rating-grid button {
+            min-width: calc(50% - 8px) !important;
+            flex: 1 1 calc(50% - 8px) !important;
+          }
+        }
+      `}</style>
       {/* Front */}
       <div style={{ padding: '18px 20px' }}>
-        <div style={{ display: 'flex', alignItems: 'flex-start', gap: '14px' }}>
+        <div className="review-card-front">
           <RetentionArc retention={retention} />
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '6px' }}>
@@ -153,9 +194,12 @@ export default function ReviewCard({ state, onRate, onSkip }: ReviewCardProps) {
                 /problems/{state.slug}
               </span>
             </div>
+            <div style={{ marginTop: '10px', fontSize: '11px', color: C.textMuted, lineHeight: 1.55 }}>
+              Recall the approach first, then reveal and rate the quality of your memory.
+            </div>
           </div>
 
-          <div style={{ display: 'flex', gap: '8px', flexShrink: 0 }}>
+          <div className="review-card-actions">
             {onSkip && (
               <button
                 onClick={() => onSkip(state.slug)}
@@ -198,7 +242,10 @@ export default function ReviewCard({ state, onRate, onSkip }: ReviewCardProps) {
           <div style={{ fontSize: '10px', fontFamily: 'DM Mono, monospace', color: C.textMuted, letterSpacing: '0.1em', marginBottom: '10px' }}>
             HOW DID IT GO?
           </div>
-          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+          <div style={{ fontSize: '11px', color: C.textMuted, marginBottom: '12px', lineHeight: 1.55 }}>
+            Rate recall quality, not how hard the original problem felt.
+          </div>
+          <div className="review-rating-grid">
             {RATINGS.map((r) => (
               <button
                 key={r.quality}

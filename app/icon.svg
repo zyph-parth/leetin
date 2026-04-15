@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <defs>
+    <linearGradient id="leetinsight-accent" x1="12" y1="10" x2="52" y2="54" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#8B5CF6" />
+      <stop offset="1" stop-color="#06B6D4" />
+    </linearGradient>
+  </defs>
+  <rect x="4" y="4" width="56" height="56" rx="16" fill="#0F0F1A" />
+  <rect x="4.5" y="4.5" width="55" height="55" rx="15.5" stroke="#2A2A42" />
+  <path d="M32 14L15 22.5L32 31L49 22.5L32 14Z" fill="url(#leetinsight-accent)" />
+  <path d="M18 34.5L32 41L46 34.5" stroke="url(#leetinsight-accent)" stroke-linecap="round" stroke-linejoin="round" stroke-width="4" />
+  <path d="M18 43L32 49L46 43" stroke="url(#leetinsight-accent)" stroke-linecap="round" stroke-linejoin="round" stroke-width="4" opacity="0.82" />
+</svg>

@@ -7,7 +7,6 @@ import {
   computeMemoryHealth, getTopicRetentionBreakdown,
   getRetentionPercent, getDaysOverdue,
 } from '@/lib/srs';
-import { loadSRSData, saveSingleState, mergeFreshProblems } from '@/lib/srs-store';
 import ReviewCard from './ReviewCard';
 import { ForgetCurve, TopicRetentionBars } from './ForgetCurve';
 
@@ -49,7 +48,7 @@ function MemoryHealthScore({ score }: { score: number }) {
   const strokeDash = (score / 100) * circumference;
 
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: '24px' }}>
+    <div className="srs-memory-health" style={{ display: 'flex', alignItems: 'center', gap: '24px' }}>
       <svg width="120" height="120" style={{ flexShrink: 0 }}>
         <circle cx={cx} cy={cy} r={r} fill="none" stroke={C.surface3} strokeWidth="7" />
         <circle
@@ -92,8 +91,8 @@ function MemoryHealthScore({ score }: { score: number }) {
 }
 
 /* ─── Upcoming Strip ─────────────────────────────────────────── */
-function UpcomingStrip({ states }: { states: Record<string, SM2State> }) {
-  const upcoming = getUpcomingProblems(states, Date.now(), 4);
+function UpcomingStrip({ nowMs, states }: { nowMs: number; states: Record<string, SM2State> }) {
+  const upcoming = getUpcomingProblems(states, nowMs, 4);
   if (upcoming.length === 0) return null;
 
   return (
@@ -106,7 +105,8 @@ function UpcomingStrip({ states }: { states: Record<string, SM2State> }) {
       </div>
       <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
         {upcoming.map(s => {
-          const daysUntil = Math.abs(getDaysOverdue(s));
+          const daysUntil = Math.abs(getDaysOverdue(s, nowMs));
+          const dueLabel = daysUntil === 0 ? 'due today' : `in ${daysUntil}d`;
           return (
             <div key={s.slug} style={{
               padding: '10px 14px',
@@ -117,7 +117,7 @@ function UpcomingStrip({ states }: { states: Record<string, SM2State> }) {
                 {s.title.length > 22 ? s.title.slice(0, 22) + '\u2026' : s.title}
               </span>
               <span style={{ fontFamily: 'DM Mono, monospace', fontSize: '10px', color: C.textMuted }}>
-                in {daysUntil}d \xB7 {getRetentionPercent(s)}%
+                {dueLabel} \xB7 {getRetentionPercent(s, nowMs)}%
               </span>
             </div>
           );
@@ -165,30 +165,25 @@ type ActiveTab = 'queue' | 'curves' | 'memory';
 
 interface SRSPanelProps {
   profile: LeetCodeProfile;
+  states: Record<string, SM2State>;
+  nowMs: number;
+  ready: boolean;
+  onStateChange: (updated: SM2State) => void;
 }
 
-export default function SRSPanel({ profile }: SRSPanelProps) {
-  const [states, setStates] = useState<Record<string, SM2State>>({});
+export default function SRSPanel({ profile, states, nowMs, ready, onStateChange }: SRSPanelProps) {
   const [activeTab, setActiveTab] = useState<ActiveTab>('queue');
   const [selectedSlug, setSelectedSlug] = useState<string>('');
   const [skipped, setSkipped] = useState<Set<string>>(new Set());
-  const [mounted, setMounted] = useState(false);
-
-  useEffect(() => {
-    const stored = loadSRSData(profile.username);
-    const merged = mergeFreshProblems(profile.username, stored, profile);
-    setStates(merged);
-    setMounted(true);
-  }, [profile]);
 
   const dueProblems = useMemo(() => {
-    if (!mounted) return [];
-    return getDueProblems(states, Date.now()).filter(s => !skipped.has(s.slug));
-  }, [states, skipped, mounted]);
+    if (!ready) return [];
+    return getDueProblems(states, nowMs).filter(s => !skipped.has(s.slug));
+  }, [nowMs, ready, states, skipped]);
 
-  const stats = useMemo(() => getQueueStats(states, Date.now()), [states]);
-  const memoryHealth = useMemo(() => computeMemoryHealth(states), [states]);
-  const topicBreakdown = useMemo(() => getTopicRetentionBreakdown(states), [states]);
+  const stats = useMemo(() => getQueueStats(states, nowMs), [nowMs, states]);
+  const memoryHealth = useMemo(() => computeMemoryHealth(states, nowMs), [nowMs, states]);
+  const topicBreakdown = useMemo(() => getTopicRetentionBreakdown(states, nowMs), [nowMs, states]);
 
   const trackedSlugs = useMemo(() => Object.keys(states), [states]);
   const selectedState = states[selectedSlug] ?? states[trackedSlugs[0]];
@@ -199,19 +194,20 @@ export default function SRSPanel({ profile }: SRSPanelProps) {
     }
   }, [trackedSlugs, selectedSlug]);
 
-  const handleRate = useCallback((slug: string, _quality: number, updated: SM2State) => {
-    setStates(prev => {
-      const next = { ...prev, [slug]: updated };
-      saveSingleState(profile.username, slug, updated);
-      return next;
-    });
+  useEffect(() => {
+    setSkipped(new Set());
+    setSelectedSlug('');
   }, [profile.username]);
+
+  const handleRate = useCallback((_slug: string, _quality: number, updated: SM2State) => {
+    onStateChange(updated);
+  }, [onStateChange]);
 
   const handleSkip = useCallback((slug: string) => {
     setSkipped(prev => new Set([...prev, slug]));
   }, []);
 
-  if (!mounted) {
+  if (!ready) {
     return (
       <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: '16px', padding: '24px' }}>
         <div style={{
@@ -230,8 +226,36 @@ export default function SRSPanel({ profile }: SRSPanelProps) {
 
   return (
     <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: '16px', overflow: 'hidden' }}>
+      <style>{`
+        .srs-memory-health {
+          display: flex;
+          align-items: center;
+          gap: 24px;
+        }
+        .srs-tab-list {
+          display: flex;
+          gap: 8px;
+          flex-wrap: wrap;
+        }
+        @media (max-width: 680px) {
+          .srs-header {
+            padding: 18px !important;
+          }
+          .srs-body {
+            padding: 20px 18px !important;
+          }
+          .srs-memory-health {
+            flex-direction: column;
+            align-items: flex-start;
+          }
+          .srs-select {
+            width: 100% !important;
+            min-width: 0 !important;
+          }
+        }
+      `}</style>
       {/* Header */}
-      <div style={{
+      <div className="srs-header" style={{
         padding: '20px 26px',
         borderBottom: `1px solid ${C.border}`,
         background: `linear-gradient(135deg, ${C.accentLight}, transparent)`,
@@ -245,9 +269,9 @@ export default function SRSPanel({ profile }: SRSPanelProps) {
             Memory Practice Queue
           </h2>
           <div style={{ fontFamily: 'DM Mono, monospace', fontSize: '12px', color: C.textSecondary }}>
-            <span style={{ color: dueProblems.length > 0 ? C.hard : C.easy }}>{stats.dueToday}</span>
-            {' due today \xB7 '}
-            <span style={{ color: C.accent }}>{stats.dueThisWeek}</span>
+            <span style={{ color: dueProblems.length > 0 ? C.hard : C.easy }}>{stats.dueNow}</span>
+            {' due now \xB7 '}
+            <span style={{ color: C.accent }}>{stats.dueWeek}</span>
             {' this week \xB7 '}
             <span style={{ color: C.textMuted }}>{stats.total}</span>
             {' total tracked'}
@@ -255,7 +279,7 @@ export default function SRSPanel({ profile }: SRSPanelProps) {
         </div>
 
         {/* Tab switcher */}
-        <div style={{ display: 'flex', gap: '8px' }}>
+        <div className="srs-tab-list">
           <Tab active={activeTab === 'queue'}  onClick={() => setActiveTab('queue')}>Queue</Tab>
           <Tab active={activeTab === 'curves'} onClick={() => setActiveTab('curves')}>Curves</Tab>
           <Tab active={activeTab === 'memory'} onClick={() => setActiveTab('memory')}>Memory</Tab>
@@ -263,7 +287,7 @@ export default function SRSPanel({ profile }: SRSPanelProps) {
       </div>
 
       {/* Body */}
-      <div style={{ padding: '24px 26px' }}>
+      <div className="srs-body" style={{ padding: '24px 26px' }}>
 
         {/* ── QUEUE TAB ──────────────────────────────────────── */}
         {activeTab === 'queue' && (
@@ -280,7 +304,7 @@ export default function SRSPanel({ profile }: SRSPanelProps) {
                 </div>
                 <div style={{ fontSize: '13px', color: C.textSecondary, lineHeight: 1.6 }}>
                   All caught up for now.
-                  {stats.dueThisWeek > 0 && ` ${stats.dueThisWeek} cards coming up this week.`}
+                  {stats.dueWeek > 0 && ` ${stats.dueWeek} cards coming up this week.`}
                 </div>
               </div>
             ) : (
@@ -288,6 +312,7 @@ export default function SRSPanel({ profile }: SRSPanelProps) {
                 {dueProblems.slice(0, 5).map(s => (
                   <ReviewCard
                     key={s.slug}
+                    nowMs={nowMs}
                     state={s}
                     onRate={handleRate}
                     onSkip={handleSkip}
@@ -305,7 +330,7 @@ export default function SRSPanel({ profile }: SRSPanelProps) {
                 )}
               </div>
             )}
-            <UpcomingStrip states={states} />
+            <UpcomingStrip nowMs={nowMs} states={states} />
           </>
         )}
 
@@ -320,6 +345,7 @@ export default function SRSPanel({ profile }: SRSPanelProps) {
                 Select Problem
               </div>
               <select
+                className="srs-select"
                 value={selectedSlug}
                 onChange={(e) => setSelectedSlug(e.target.value)}
                 style={{
@@ -337,7 +363,7 @@ export default function SRSPanel({ profile }: SRSPanelProps) {
 
             {selectedState && (
               <div style={{ background: C.surface2, border: `1px solid ${C.border}`, borderRadius: '12px', padding: '20px' }}>
-                <ForgetCurve state={selectedState} />
+                <ForgetCurve nowMs={nowMs} state={selectedState} />
               </div>
             )}
           </>

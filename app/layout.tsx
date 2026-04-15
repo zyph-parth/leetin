@@ -24,8 +24,13 @@ const dmSerif = DM_Serif_Display({
 });
 
 export const metadata: Metadata = {
-  title: 'LeetInsight — Deep LeetCode Analytics',
+  title: 'LeetInsight - Deep LeetCode Analytics',
   description: 'Uncover your coding patterns, personality, and path to interview readiness.',
+  icons: {
+    icon: '/icon.svg',
+    shortcut: '/icon.svg',
+    apple: '/icon.svg',
+  },
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

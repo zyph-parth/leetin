@@ -1,23 +1,23 @@
 'use client';
 
 import {
-  Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis,
+  Area,
+  AreaChart,
+  CartesianGrid,
+  ReferenceLine,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
 } from 'recharts';
 import type { SM2State } from '@/lib/srs';
-import { getRetentionPercent } from '@/lib/srs';
+import { computeForgetCurve, getDaysOverdue, getRetentionPercent } from '@/lib/srs';
 
 const C = {
   accent: '#8B5CF6',
-  accentLight: 'rgba(139,92,246,0.12)',
-  accentBorder: 'rgba(139,92,246,0.25)',
   easy: '#10B981',
-  easyLight: 'rgba(16,185,129,0.12)',
-  easyBorder: 'rgba(16,185,129,0.25)',
   hard: '#F43F5E',
-  hardLight: 'rgba(244,63,94,0.12)',
-  hardBorder: 'rgba(244,63,94,0.25)',
   border: '#2A2A42',
-  surface: '#0F0F1A',
   surface2: '#181826',
   surface3: '#222236',
   textPrimary: '#EAEAF4',
@@ -25,27 +25,21 @@ const C = {
   textMuted: '#4E4E72',
 };
 
-function ebbinghausRetention(daysSinceReview: number, stability: number): number {
-  if (daysSinceReview <= 0) return 100;
-  return Math.round(100 * Math.exp(-daysSinceReview / stability));
-}
-
 interface ForgetCurveProps {
+  nowMs: number;
   state: SM2State;
 }
 
-export function ForgetCurve({ state }: ForgetCurveProps) {
-  const stability = state.interval > 0 ? state.interval : 1;
-  const horizon = Math.max(stability * 2.5, 30);
-  const points = Math.min(Math.ceil(horizon), 90);
+function getReviewLabel(daysOverdue: number): string {
+  if (daysOverdue > 0) return `${daysOverdue}d overdue`;
+  if (daysOverdue < 0) return `Due in ${Math.abs(daysOverdue)}d`;
+  return 'Due today';
+}
 
-  const data = Array.from({ length: points + 1 }, (_, i) => ({
-    day: i,
-    retention: Math.max(0, ebbinghausRetention(i, stability)),
-    threshold: 60,
-  }));
-
-  const currentRetention = getRetentionPercent(state);
+export function ForgetCurve({ nowMs, state }: ForgetCurveProps) {
+  const data = computeForgetCurve(state, nowMs);
+  const currentRetention = getRetentionPercent(state, nowMs);
+  const daysOverdue = getDaysOverdue(state, nowMs);
   const retentionColor = currentRetention >= 60 ? C.easy : currentRetention >= 30 ? C.accent : C.hard;
 
   const tooltipStyle = {
@@ -69,7 +63,7 @@ export function ForgetCurve({ state }: ForgetCurveProps) {
           </span>
         </div>
         <div style={{ fontSize: '12px', color: C.textSecondary, marginTop: '4px' }}>
-          Next review in {state.interval}d · stability {stability.toFixed(1)}d
+          {getReviewLabel(daysOverdue)} · interval {state.interval}d
         </div>
       </div>
       <ResponsiveContainer width="100%" height={180}>
@@ -84,25 +78,38 @@ export function ForgetCurve({ state }: ForgetCurveProps) {
           <XAxis
             dataKey="day"
             tick={{ fontSize: 9, fill: C.textMuted, fontFamily: 'DM Mono' }}
-            axisLine={false} tickLine={false}
+            axisLine={false}
+            tickLine={false}
             label={{ value: 'Days', position: 'insideBottom', offset: -2, fontSize: 9, fill: C.textMuted, fontFamily: 'DM Mono' }}
           />
           <YAxis
             tick={{ fontSize: 9, fill: C.textMuted, fontFamily: 'DM Mono' }}
-            axisLine={false} tickLine={false}
-            domain={[0, 100]} width={28}
-            tickFormatter={(v) => `${v}%`}
+            axisLine={false}
+            tickLine={false}
+            domain={[0, 100]}
+            width={28}
+            tickFormatter={(value) => `${value}%`}
           />
           <Tooltip
             contentStyle={tooltipStyle}
-            formatter={(val: number) => [`${val}%`, 'Retention']}
+            formatter={(value: number) => [`${value}%`, 'Retention']}
             labelFormatter={(day: number) => `Day ${day}`}
             cursor={{ stroke: C.border }}
           />
+          <ReferenceLine
+            x={state.interval}
+            stroke={C.textMuted}
+            strokeDasharray="4 4"
+            label={{ value: 'scheduled review', position: 'insideTopRight', fill: C.textMuted, fontSize: 9 }}
+          />
+          <ReferenceLine y={60} stroke={C.surface3} strokeDasharray="3 3" />
           <Area
-            type="monotone" dataKey="retention"
-            stroke={C.accent} fill="url(#curveGrad)"
-            strokeWidth={2} dot={false}
+            type="monotone"
+            dataKey="retention"
+            stroke={C.accent}
+            fill="url(#curveGrad)"
+            strokeWidth={2}
+            dot={false}
           />
         </AreaChart>
       </ResponsiveContainer>
@@ -132,11 +139,14 @@ export function TopicRetentionBars({ breakdown }: TopicRetentionBarsProps) {
             </div>
             <div style={{ height: '4px', background: C.surface3, borderRadius: '2px', overflow: 'hidden' }}>
               <div style={{
-                height: '100%', width: `${avgRetention}%`,
+                height: '100%',
+                width: `${avgRetention}%`,
                 background: `linear-gradient(90deg, ${color}, ${color}99)`,
-                borderRadius: '2px', transition: 'width 0.8s cubic-bezier(0.22,1,0.36,1)',
+                borderRadius: '2px',
+                transition: 'width 0.8s cubic-bezier(0.22,1,0.36,1)',
                 boxShadow: `0 0 6px ${color}66`,
-              }} />
+              }}
+              />
             </div>
           </div>
         );
