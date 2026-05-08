@@ -35,8 +35,29 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className={`${dmSans.variable} ${dmMono.variable} ${dmSerif.variable}`}>
-      <body>{children}</body>
+    <html
+      lang="en"
+      className={`${dmSans.variable} ${dmMono.variable} ${dmSerif.variable}`}
+      suppressHydrationWarning
+    >
+      <head>
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `
+              (() => {
+                try {
+                  const stored = localStorage.getItem('leetinsight:theme');
+                  const system = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+                  document.documentElement.dataset.theme = stored || system;
+                } catch {
+                  document.documentElement.dataset.theme = 'dark';
+                }
+              })();
+            `,
+          }}
+        />
+      </head>
+      <body suppressHydrationWarning>{children}</body>
     </html>
   );
 }

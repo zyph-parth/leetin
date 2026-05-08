@@ -3,10 +3,12 @@
 @tailwind utilities;
 
 :root {
+  color-scheme: dark;
   --bg: #07070C;
   --surface: #0F0F1A;
   --surface-2: #181826;
   --surface-3: #222236;
+  --surface-elevated: rgba(15, 15, 26, 0.88);
   --border: #2A2A42;
   --border-hover: #3E3E5E;
   --text-primary: #EAEAF4;
@@ -14,24 +16,105 @@
   --text-muted: #4E4E72;
   --accent: #8B5CF6;
   --accent-light: rgba(139, 92, 246, 0.12);
+  --accent-border: rgba(139, 92, 246, 0.28);
   --accent-2: #06B6D4;
   --accent-2-light: rgba(6, 182, 212, 0.12);
+  --accent-2-border: rgba(6, 182, 212, 0.24);
   --easy: #10B981;
   --easy-light: rgba(16, 185, 129, 0.12);
+  --easy-border: rgba(16, 185, 129, 0.28);
   --medium: #F59E0B;
   --medium-light: rgba(245, 158, 11, 0.12);
+  --medium-border: rgba(245, 158, 11, 0.28);
   --hard: #F43F5E;
   --hard-light: rgba(244, 63, 94, 0.12);
+  --hard-border: rgba(244, 63, 94, 0.28);
   --danger: #F43F5E;
   --danger-light: rgba(244, 63, 94, 0.12);
   --info: #38BDF8;
   --info-light: rgba(56, 189, 248, 0.12);
+  --info-border: rgba(56, 189, 248, 0.28);
+  --nav-bg: rgba(7, 7, 12, 0.85);
+  --hero-grid-opacity: 0.25;
+  --hero-orb-1: rgba(139, 92, 246, 0.15);
+  --hero-orb-2: rgba(6, 182, 212, 0.08);
+  --hero-orb-3: rgba(139, 92, 246, 0.05);
+  --card-bg: linear-gradient(180deg, rgba(19, 19, 33, 0.98), rgba(12, 12, 22, 0.98));
+  --card-shadow: 0 18px 60px rgba(0, 0, 0, 0.24);
+  --workspace-nav-bg: rgba(10, 10, 18, 0.82);
+  --tooltip-bg: #222236;
+  --tooltip-border: #3E3E5E;
+  --tooltip-muted: #6E6E9A;
+  --tooltip-shadow: 0 4px 20px rgba(0, 0, 0, 0.6);
+  --heatmap-0: #181826;
+  --heatmap-1: #3B2A6B;
+  --heatmap-2: #5B3E9F;
+  --heatmap-3: #7C4FD4;
+  --heatmap-4: #8B5CF6;
+  --select-icon-stroke: %234E4E72;
   --glow-accent: 0 0 40px rgba(139, 92, 246, 0.2);
   --glow-cyan: 0 0 40px rgba(6, 182, 212, 0.15);
 }
 
+:root[data-theme='light'] {
+  color-scheme: light;
+  --bg: #F7F8FC;
+  --surface: #FFFFFF;
+  --surface-2: #F0F3FA;
+  --surface-3: #E6EAF4;
+  --surface-elevated: rgba(255, 255, 255, 0.84);
+  --border: #D8DEEA;
+  --border-hover: #C2CBDC;
+  --text-primary: #101426;
+  --text-secondary: #526077;
+  --text-muted: #8A96AA;
+  --accent: #6D5DF6;
+  --accent-light: rgba(109, 93, 246, 0.11);
+  --accent-border: rgba(109, 93, 246, 0.24);
+  --accent-2: #0891B2;
+  --accent-2-light: rgba(8, 145, 178, 0.1);
+  --accent-2-border: rgba(8, 145, 178, 0.2);
+  --easy: #059669;
+  --easy-light: rgba(5, 150, 105, 0.1);
+  --easy-border: rgba(5, 150, 105, 0.22);
+  --medium: #B7791F;
+  --medium-light: rgba(183, 121, 31, 0.12);
+  --medium-border: rgba(183, 121, 31, 0.24);
+  --hard: #E11D48;
+  --hard-light: rgba(225, 29, 72, 0.1);
+  --hard-border: rgba(225, 29, 72, 0.22);
+  --danger: #E11D48;
+  --danger-light: rgba(225, 29, 72, 0.1);
+  --info: #0284C7;
+  --info-light: rgba(2, 132, 199, 0.1);
+  --info-border: rgba(2, 132, 199, 0.22);
+  --nav-bg: rgba(255, 255, 255, 0.78);
+  --hero-grid-opacity: 0.42;
+  --hero-orb-1: rgba(109, 93, 246, 0.13);
+  --hero-orb-2: rgba(8, 145, 178, 0.08);
+  --hero-orb-3: rgba(5, 150, 105, 0.06);
+  --card-bg: linear-gradient(180deg, rgba(255,255,255,0.96), rgba(247,248,252,0.94));
+  --card-shadow: 0 18px 55px rgba(31, 42, 68, 0.1);
+  --workspace-nav-bg: rgba(255, 255, 255, 0.82);
+  --tooltip-bg: #FFFFFF;
+  --tooltip-border: #D8DEEA;
+  --tooltip-muted: #8A96AA;
+  --tooltip-shadow: 0 10px 30px rgba(31, 42, 68, 0.14);
+  --heatmap-0: #E6EAF4;
+  --heatmap-1: #D9D5FE;
+  --heatmap-2: #B9AEFF;
+  --heatmap-3: #8B7CFA;
+  --heatmap-4: #6D5DF6;
+  --select-icon-stroke: %238A96AA;
+  --glow-accent: 0 0 34px rgba(109, 93, 246, 0.16);
+  --glow-cyan: 0 0 34px rgba(8, 145, 178, 0.12);
+}
+
 * { box-sizing: border-box; margin: 0; padding: 0; }
-html { scroll-behavior: smooth; }
+html {
+  scroll-behavior: smooth;
+  background: var(--bg);
+}
 
 body {
   background-color: var(--bg);
@@ -41,6 +124,7 @@ body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   min-height: 100vh;
+  transition: background-color 0.2s ease, color 0.2s ease;
 }
 
 a,
@@ -137,7 +221,7 @@ textarea {
 select {
   appearance: none;
   -webkit-appearance: none;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%234E4E72' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+  background-image: var(--select-icon, url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%234E4E72' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E"));
   background-repeat: no-repeat;
   background-position: right 12px center;
   padding-right: 32px !important;

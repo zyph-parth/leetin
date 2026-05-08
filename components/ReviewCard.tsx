@@ -1,31 +1,31 @@
 'use client';
 
-import { useState, useMemo } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   SM2State, ReviewQuality, getRetentionPercent,
   getDaysOverdue, updateSM2,
 } from '@/lib/srs';
 
 const C = {
-  accent: '#8B5CF6',
-  accentLight: 'rgba(139,92,246,0.12)',
-  accentBorder: 'rgba(139,92,246,0.25)',
-  easy: '#10B981',
-  easyLight: 'rgba(16,185,129,0.12)',
-  easyBorder: 'rgba(16,185,129,0.25)',
-  medium: '#F59E0B',
-  mediumLight: 'rgba(245,158,11,0.12)',
-  mediumBorder: 'rgba(245,158,11,0.25)',
-  hard: '#F43F5E',
-  hardLight: 'rgba(244,63,94,0.12)',
-  hardBorder: 'rgba(244,63,94,0.25)',
-  border: '#2A2A42',
-  surface: '#0F0F1A',
-  surface2: '#181826',
-  surface3: '#222236',
-  textPrimary: '#EAEAF4',
-  textSecondary: '#8A8AAE',
-  textMuted: '#4E4E72',
+  accent: 'var(--accent)',
+  accentLight: 'var(--accent-light)',
+  accentBorder: 'var(--accent-border)',
+  easy: 'var(--easy)',
+  easyLight: 'var(--easy-light)',
+  easyBorder: 'var(--easy-border)',
+  medium: 'var(--medium)',
+  mediumLight: 'var(--medium-light)',
+  mediumBorder: 'var(--medium-border)',
+  hard: 'var(--hard)',
+  hardLight: 'var(--hard-light)',
+  hardBorder: 'var(--hard-border)',
+  border: 'var(--border)',
+  surface: 'var(--surface)',
+  surface2: 'var(--surface-2)',
+  surface3: 'var(--surface-3)',
+  textPrimary: 'var(--text-primary)',
+  textSecondary: 'var(--text-secondary)',
+  textMuted: 'var(--text-muted)',
 };
 
 const DIFF_COLOR: Record<string, { text: string; bg: string; border: string }> = {
@@ -36,9 +36,9 @@ const DIFF_COLOR: Record<string, { text: string; bg: string; border: string }> =
 
 const RATINGS: { quality: ReviewQuality; label: string; desc: string; color: string; bg: string; border: string }[] = [
   { quality: 0, label: 'Blackout',  desc: 'Complete blank',         color: C.hard,   bg: C.hardLight,   border: C.hardBorder   },
-  { quality: 1, label: 'Severe',    desc: 'Barely recalled',        color: '#EA580C', bg: 'rgba(234,88,12,0.12)', border: 'rgba(234,88,12,0.3)' },
+  { quality: 1, label: 'Severe',    desc: 'Barely recalled',        color: C.hard, bg: C.hardLight, border: C.hardBorder },
   { quality: 2, label: 'Barely',    desc: 'Too much struggle',      color: C.medium, bg: C.mediumLight, border: C.mediumBorder },
-  { quality: 3, label: 'Hard',      desc: 'Remembered with effort', color: '#D97706', bg: 'rgba(217,119,6,0.12)', border: 'rgba(217,119,6,0.3)' },
+  { quality: 3, label: 'Hard',      desc: 'Remembered with effort', color: C.medium, bg: C.mediumLight, border: C.mediumBorder },
   { quality: 4, label: 'Good',      desc: 'Minor hesitation',       color: C.accent, bg: C.accentLight, border: C.accentBorder },
   { quality: 5, label: 'Easy',      desc: 'Perfect recall',         color: C.easy,   bg: C.easyLight,   border: C.easyBorder   },
 ];
@@ -81,20 +81,38 @@ export default function ReviewCard({ nowMs, state, onRate, onSkip }: ReviewCardP
   const [revealed, setRevealed] = useState(false);
   const [rated, setRated] = useState(false);
   const [flipping, setFlipping] = useState(false);
+  const revealTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const rateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const retention = useMemo(() => getRetentionPercent(state, nowMs), [nowMs, state]);
   const daysOverdue = useMemo(() => getDaysOverdue(state, nowMs), [nowMs, state]);
   const diff = DIFF_COLOR[state.difficulty] ?? DIFF_COLOR['Medium'];
 
+  useEffect(() => {
+    return () => {
+      if (revealTimerRef.current) clearTimeout(revealTimerRef.current);
+      if (rateTimerRef.current) clearTimeout(rateTimerRef.current);
+    };
+  }, []);
+
   function handleReveal() {
     setFlipping(true);
-    setTimeout(() => { setRevealed(true); setFlipping(false); }, 200);
+    if (revealTimerRef.current) clearTimeout(revealTimerRef.current);
+    revealTimerRef.current = setTimeout(() => {
+      setRevealed(true);
+      setFlipping(false);
+      revealTimerRef.current = null;
+    }, 200);
   }
 
   function handleRate(quality: ReviewQuality) {
     const updated = updateSM2(state, quality, { nowMs: Date.now() });
     setRated(true);
-    setTimeout(() => onRate(state.slug, quality, updated), 300);
+    if (rateTimerRef.current) clearTimeout(rateTimerRef.current);
+    rateTimerRef.current = setTimeout(() => {
+      onRate(state.slug, quality, updated);
+      rateTimerRef.current = null;
+    }, 300);
   }
 
   if (rated) {
@@ -220,14 +238,14 @@ export default function ReviewCard({ nowMs, state, onRate, onSkip }: ReviewCardP
                 onClick={handleReveal}
                 style={{
                   padding: '7px 16px',
-                  background: `linear-gradient(135deg, ${C.accent}, #7C3AED)`,
+                  background: `linear-gradient(135deg, ${C.accent}, var(--accent-2))`,
                   border: 'none', borderRadius: '8px',
                   color: 'white', fontSize: '12px', fontFamily: 'DM Mono, monospace',
                   cursor: 'pointer', transition: 'all 0.15s',
-                  boxShadow: '0 0 12px rgba(139,92,246,0.3)',
+                  boxShadow: 'var(--glow-accent)',
                 }}
-                onMouseEnter={(e) => { e.currentTarget.style.boxShadow = '0 0 20px rgba(139,92,246,0.5)'; }}
-                onMouseLeave={(e) => { e.currentTarget.style.boxShadow = '0 0 12px rgba(139,92,246,0.3)'; }}
+                onMouseEnter={(e) => { e.currentTarget.style.boxShadow = 'var(--glow-accent)'; }}
+                onMouseLeave={(e) => { e.currentTarget.style.boxShadow = 'var(--glow-accent)'; }}
               >
                 Review →
               </button>
@@ -256,7 +274,7 @@ export default function ReviewCard({ nowMs, state, onRate, onSkip }: ReviewCardP
                   color: r.color, cursor: 'pointer',
                   transition: 'all 0.15s ease', flex: 1, minWidth: '80px',
                 }}
-                onMouseEnter={(e) => { e.currentTarget.style.transform = 'translateY(-2px)'; e.currentTarget.style.boxShadow = `0 4px 12px ${r.color}33`; }}
+                onMouseEnter={(e) => { e.currentTarget.style.transform = 'translateY(-2px)'; e.currentTarget.style.boxShadow = 'var(--glow-accent)'; }}
                 onMouseLeave={(e) => { e.currentTarget.style.transform = 'translateY(0)'; e.currentTarget.style.boxShadow = 'none'; }}
               >
                 <div style={{ fontFamily: 'DM Mono, monospace', fontSize: '12px', fontWeight: 600 }}>{r.label}</div>

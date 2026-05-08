@@ -2,7 +2,16 @@
 
 import { useState } from 'react';
 import dynamic from 'next/dynamic';
-import { LeetCodeProfile } from '@/lib/leetcode';
+import type { LeetCodeProfile } from '@/lib/leetcode';
+import {
+  getLeetCodeUsernameError,
+  isValidLeetCodeUsername,
+  LEETCODE_USERNAME_MAX_LENGTH,
+  LEETCODE_USERNAME_PATTERN,
+  normalizeLeetCodeUsername,
+} from '@/lib/username';
+import { isLeetCodeProfile } from '@/lib/profile-schema';
+import ThemeToggle from '@/components/ThemeToggle';
 
 const Dashboard = dynamic(() => import('@/components/Dashboard'), { ssr: false });
 
@@ -41,17 +50,23 @@ export default function Home() {
   const [profile, setProfile] = useState<LeetCodeProfile | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const normalizedUsername = normalizeLeetCodeUsername(username);
+  const isUsernameReady = isValidLeetCodeUsername(normalizedUsername);
 
   async function handleSearch(e?: React.FormEvent) {
     e?.preventDefault();
-    if (!username.trim()) return;
+    const usernameError = getLeetCodeUsernameError(username);
+    if (usernameError) {
+      setError(usernameError);
+      return;
+    }
 
     setLoading(true);
     setError('');
     setProfile(null);
 
     try {
-      const res = await fetch(`/api/profile?username=${encodeURIComponent(username.trim())}`);
+      const res = await fetch(`/api/profile?username=${encodeURIComponent(normalizedUsername)}`);
       let data: { error?: string } = {};
 
       try {
@@ -64,7 +79,11 @@ export default function Home() {
         throw new Error(data.error || `Request failed (${res.status})`);
       }
 
-      setProfile(data as unknown as LeetCodeProfile);
+      if (!isLeetCodeProfile(data)) {
+        throw new Error('Server returned an invalid profile payload. Please try again.');
+      }
+
+      setProfile(data);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Something went wrong');
     } finally {
@@ -82,7 +101,7 @@ export default function Home() {
     <main style={{ minHeight: '100vh', position: 'relative', zIndex: 1 }}>
       <nav style={{
         borderBottom: '1px solid var(--border)',
-        background: 'rgba(7, 7, 12, 0.85)',
+        background: 'var(--nav-bg)',
         backdropFilter: 'blur(16px)',
         WebkitBackdropFilter: 'blur(16px)',
         position: 'sticky',
@@ -90,9 +109,10 @@ export default function Home() {
         zIndex: 100,
       }}>
         <div style={{
-          maxWidth: '1160px',
+          width: '100%',
+          maxWidth: 'none',
           margin: '0 auto',
-          padding: '0 28px',
+          padding: '0 clamp(16px, 3vw, 48px)',
           height: '58px',
           display: 'flex',
           alignItems: 'center',
@@ -113,7 +133,7 @@ export default function Home() {
               color: 'var(--accent)',
               letterSpacing: '0.12em',
               background: 'var(--accent-light)',
-              border: '1px solid rgba(139,92,246,0.3)',
+              border: '1px solid var(--accent-border)',
               borderRadius: '4px',
               padding: '2px 6px',
             }}>
@@ -121,8 +141,9 @@ export default function Home() {
             </span>
           </div>
 
-          {profile && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <ThemeToggle />
+            {profile && (
               <button
                 onClick={handleReset}
                 style={{ ...navBtnStyle, padding: '7px 16px' }}
@@ -135,8 +156,8 @@ export default function Home() {
               >
                 Reset Search
               </button>
-            </div>
-          )}
+            )}
+          </div>
         </div>
       </nav>
 
@@ -156,9 +177,9 @@ export default function Home() {
             inset: 0,
             pointerEvents: 'none',
             background: `
-              radial-gradient(ellipse 80% 50% at 50% -10%, rgba(139,92,246,0.15) 0%, transparent 60%),
-              radial-gradient(ellipse 50% 30% at 80% 60%, rgba(6,182,212,0.08) 0%, transparent 50%),
-              radial-gradient(ellipse 40% 40% at 20% 80%, rgba(139,92,246,0.05) 0%, transparent 50%)
+              radial-gradient(ellipse 80% 50% at 50% -10%, var(--hero-orb-1) 0%, transparent 60%),
+              radial-gradient(ellipse 50% 30% at 80% 60%, var(--hero-orb-2) 0%, transparent 50%),
+              radial-gradient(ellipse 40% 40% at 20% 80%, var(--hero-orb-3) 0%, transparent 50%)
             `,
           }} />
 
@@ -168,7 +189,7 @@ export default function Home() {
             pointerEvents: 'none',
             backgroundImage: 'linear-gradient(var(--border) 1px, transparent 1px), linear-gradient(90deg, var(--border) 1px, transparent 1px)',
             backgroundSize: '60px 60px',
-            opacity: 0.25,
+            opacity: 'var(--hero-grid-opacity)',
             maskImage: 'radial-gradient(ellipse 80% 80% at 50% 50%, black 40%, transparent 100%)',
           }} />
 
@@ -180,7 +201,7 @@ export default function Home() {
               marginBottom: '28px',
               padding: '6px 14px',
               background: 'var(--accent-light)',
-              border: '1px solid rgba(139,92,246,0.3)',
+              border: '1px solid var(--accent-border)',
               borderRadius: '999px',
               fontSize: '11px',
               fontFamily: 'DM Mono, monospace',
@@ -242,6 +263,8 @@ export default function Home() {
                   onChange={(e) => setUsername(e.target.value)}
                   placeholder="leetcode-username"
                   aria-label="LeetCode username"
+                  maxLength={LEETCODE_USERNAME_MAX_LENGTH}
+                  pattern={LEETCODE_USERNAME_PATTERN.source}
                   autoFocus
                   autoCapitalize="none"
                   autoComplete="off"
@@ -260,8 +283,8 @@ export default function Home() {
                     transition: 'border-color 0.2s, box-shadow 0.2s',
                   }}
                   onFocus={(e) => {
-                    e.target.style.borderColor = 'rgba(139,92,246,0.6)';
-                    e.target.style.boxShadow = '0 0 0 3px rgba(139,92,246,0.1)';
+                    e.target.style.borderColor = 'var(--accent)';
+                    e.target.style.boxShadow = '0 0 0 3px var(--accent-light)';
                   }}
                   onBlur={(e) => {
                     e.target.style.borderColor = 'var(--border)';
@@ -272,34 +295,34 @@ export default function Home() {
 
               <button
                 type="submit"
-                disabled={loading || !username.trim()}
+                disabled={loading || !isUsernameReady}
                 aria-label="Analyze this LeetCode profile"
                 suppressHydrationWarning
                 style={{
                   width: '100%',
                   padding: '15px 24px',
-                  background: 'linear-gradient(135deg, var(--accent) 0%, #7C3AED 100%)',
+                  background: 'linear-gradient(135deg, var(--accent) 0%, var(--accent-2) 100%)',
                   color: 'white',
                   border: 'none',
                   borderRadius: '12px',
                   fontSize: '15px',
                   fontFamily: 'DM Mono, monospace',
                   fontWeight: 500,
-                  cursor: loading || !username.trim() ? 'not-allowed' : 'pointer',
-                  opacity: loading || !username.trim() ? 0.5 : 1,
+                  cursor: loading || !isUsernameReady ? 'not-allowed' : 'pointer',
+                  opacity: loading || !isUsernameReady ? 0.5 : 1,
                   transition: 'opacity 0.2s, transform 0.1s, box-shadow 0.2s',
                   letterSpacing: '0.02em',
-                  boxShadow: loading || !username.trim() ? 'none' : '0 0 24px rgba(139,92,246,0.4)',
+                  boxShadow: loading || !isUsernameReady ? 'none' : 'var(--glow-accent)',
                 }}
                 onMouseEnter={(e) => {
-                  if (!loading && username.trim()) {
+                  if (!loading && isUsernameReady) {
                     e.currentTarget.style.transform = 'translateY(-1px)';
-                    e.currentTarget.style.boxShadow = '0 0 36px rgba(139,92,246,0.6)';
+                    e.currentTarget.style.boxShadow = 'var(--glow-accent)';
                   }
                 }}
                 onMouseLeave={(e) => {
                   e.currentTarget.style.transform = 'translateY(0)';
-                  e.currentTarget.style.boxShadow = loading || !username.trim() ? 'none' : '0 0 24px rgba(139,92,246,0.4)';
+                  e.currentTarget.style.boxShadow = loading || !isUsernameReady ? 'none' : 'var(--glow-accent)';
                 }}
               >
                 {loading ? 'Analyzing profile...' : 'Analyze Profile'}
@@ -315,7 +338,7 @@ export default function Home() {
                 marginTop: '16px',
                 padding: '12px 16px',
                 background: 'var(--danger-light)',
-                border: '1px solid rgba(244,63,94,0.3)',
+                border: '1px solid var(--hard-border)',
                 borderRadius: '10px',
                 color: 'var(--danger)',
                 fontSize: '13px',
@@ -351,7 +374,7 @@ export default function Home() {
                     height: '20px',
                     borderRadius: '50%',
                     background: 'var(--accent-light)',
-                    border: '1px solid rgba(139,92,246,0.3)',
+                    border: '1px solid var(--accent-border)',
                     color: 'var(--accent)',
                     fontSize: '9px',
                     display: 'inline-flex',
@@ -371,7 +394,7 @@ export default function Home() {
       )}
 
       {loading && (
-        <div style={{ maxWidth: '1160px', margin: '48px auto', padding: '0 28px' }}>
+        <div style={{ width: '100%', maxWidth: 'none', margin: '48px auto', padding: '0 clamp(16px, 3vw, 48px)' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '16px', padding: '24px 28px', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '16px', marginBottom: '20px' }}>
             <div className="skeleton" style={{ width: '52px', height: '52px', borderRadius: '10px', flexShrink: 0 }} />
             <div style={{ flex: 1 }}>

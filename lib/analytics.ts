@@ -1,5 +1,14 @@
-import { LeetCodeProfile } from './leetcode';
-import { getTopicRetentionBreakdown, SM2State } from './srs';
+import type { LeetCodeProfile, TagStat } from './leetcode';
+import { isAcceptedSubmissionStatus } from './leetcode';
+import { computeMemoryHealth, getTopicRetentionBreakdown, SM2State } from './srs';
+import {
+  COMPANY_TOPICS,
+  getTopicFamily,
+  PROBLEM_CATALOG,
+  TOPIC_SUBPATTERNS,
+  type CompanyPrepSignal,
+  type CompanyTopicSignal,
+} from './analytics-data';
 
 export type PersonalityType =
   | 'The Sniper'
@@ -10,6 +19,7 @@ export type PersonalityType =
 export type BurnoutLevel = 'low' | 'medium' | 'high';
 export type ProgressionHealth = 'healthy' | 'stagnant' | 'regressing';
 export type VerdictLabel = 'Interview Ready' | 'Almost There' | 'On Track' | 'Keep Building';
+export type ReadinessConfidence = 'low' | 'medium' | 'high';
 
 export interface Gap {
   label: string;
@@ -23,6 +33,9 @@ export interface CompanyReadiness {
   readinessScore: number;
   topTopics: string[];
   missingTopics: string[];
+  prepSignals: CompanyPrepSignal[];
+  researchBasis: string;
+  scoreBasis: string;
   recommendation: string;
 }
 
@@ -65,17 +78,20 @@ export interface Analytics {
   consistencyScore: number;
   consistencyBreakdown: { label: string; score: number; max: number }[];
   interviewReadiness: number;
+  readinessConfidence: ReadinessConfidence;
+  readinessConfidenceNote: string;
   readinessBreakdown: { label: string; score: number; max: number; note: string }[];
   burnoutRisk: BurnoutLevel;
   burnoutNote: string;
   plateauDetected: boolean;
   plateauNote: string;
   peakDay: string;
-  weeklyAvg: number;
-  dailyAvgOnActiveDays: number;
+  weeklySubmissionsAvg: number;
+  weeklyAcceptedSubmissionsEstimate: number;
+  dailySubmissionsAvgOnActiveDays: number;
   progressionHealth: ProgressionHealth;
   progressionNote: string;
-  estimatedWeeksToReady: number;
+  estimatedWeeksToVolumeTarget: number;
   recentAcceptanceRate: number;
   hardAttemptRate: number;
   strengthTopics: { name: string; count: number; level: string }[];
@@ -103,15 +119,6 @@ interface AnalyticsOptions {
   targetCompany?: string;
 }
 
-interface TopicCatalogEntry {
-  title: string;
-  slug: string;
-  difficulty: 'Easy' | 'Medium' | 'Hard';
-  topic: string;
-  subpatterns: string[];
-  companies: string[];
-}
-
 interface TopicRetentionEntry {
   topic: string;
   avgRetention: number;
@@ -119,271 +126,159 @@ interface TopicRetentionEntry {
   dueCount: number;
 }
 
-const COMPANY_TOPICS: Record<string, { topics: string[]; logo: string }> = {
-  Google: {
-    logo: 'G',
-    topics: ['Dynamic Programming', 'Graph', 'Tree', 'Binary Search', 'Depth-First Search', 'Breadth-First Search', 'String', 'Array'],
-  },
-  Meta: {
-    logo: 'M',
-    topics: ['Array', 'String', 'Tree', 'Dynamic Programming', 'Hash Table', 'Linked List', 'Graph', 'Recursion'],
-  },
-  Amazon: {
-    logo: 'A',
-    topics: ['Array', 'Tree', 'Dynamic Programming', 'String', 'Graph', 'Queue', 'Hash Table', 'Sorting'],
-  },
-  Microsoft: {
-    logo: 'MS',
-    topics: ['Tree', 'Linked List', 'Dynamic Programming', 'Array', 'String', 'Graph', 'Backtracking'],
-  },
-};
+type TopicLevel = 'Advanced' | 'Intermediate' | 'Fundamental';
 
-const TOPIC_SUBPATTERNS: Record<string, string[]> = {
-  'Dynamic Programming': ['1D state transitions', 'knapsack style choices', 'grid DP', 'subsequence DP', 'interval DP'],
-  Graph: ['BFS shortest paths', 'DFS traversal', 'topological ordering', 'union-find connectivity', 'weighted path reasoning'],
-  Tree: ['tree DFS', 'lowest common ancestor', 'tree DP', 'BST invariants', 'path aggregation'],
-  Array: ['two pointers', 'prefix sums', 'greedy scans', 'sorting with invariants', 'hashing for complements'],
-  String: ['sliding window', 'frequency maps', 'palindrome expansion', 'state machine parsing', 'prefix-function style matching'],
-  'Binary Search': ['answer search', 'boundary search', 'rotated arrays', 'search on monotonic functions'],
-  'Hash Table': ['complement lookup', 'frequency counting', 'grouping', 'prefix hash tricks'],
-  'Linked List': ['pointer rewiring', 'fast slow pointers', 'cycle detection', 'k-group manipulation'],
-  Queue: ['monotonic queue', 'level-order batching', 'window scheduling'],
-  Backtracking: ['decision trees', 'pruning', 'state restoration', 'subset generation'],
-  Sorting: ['custom comparator logic', 'bucket ordering', 'interval merging'],
-  Recursion: ['divide and conquer', 'post-order state returns', 'recursive decomposition'],
-  'Depth-First Search': ['recursive traversal', 'backtracking state', 'component traversal'],
-  'Breadth-First Search': ['multi-source BFS', 'level expansion', 'queue state modelling'],
-};
+interface TopicWithLevel extends TagStat {
+  level: TopicLevel;
+}
 
-const PROBLEM_CATALOG: TopicCatalogEntry[] = [
-  {
-    title: 'Climbing Stairs',
-    slug: 'climbing-stairs',
-    difficulty: 'Easy',
-    topic: 'Dynamic Programming',
-    subpatterns: ['1D state transitions'],
-    companies: ['Google', 'Amazon', 'Microsoft'],
-  },
-  {
-    title: 'House Robber',
-    slug: 'house-robber',
-    difficulty: 'Medium',
-    topic: 'Dynamic Programming',
-    subpatterns: ['1D state transitions', 'knapsack style choices'],
-    companies: ['Meta', 'Amazon', 'Microsoft'],
-  },
-  {
-    title: 'Coin Change',
-    slug: 'coin-change',
-    difficulty: 'Medium',
-    topic: 'Dynamic Programming',
-    subpatterns: ['knapsack style choices'],
-    companies: ['Google', 'Meta', 'Amazon'],
-  },
-  {
-    title: 'Longest Increasing Subsequence',
-    slug: 'longest-increasing-subsequence',
-    difficulty: 'Medium',
-    topic: 'Dynamic Programming',
-    subpatterns: ['subsequence DP', 'binary search'],
-    companies: ['Google', 'Meta', 'Microsoft'],
-  },
-  {
-    title: 'Edit Distance',
-    slug: 'edit-distance',
-    difficulty: 'Hard',
-    topic: 'Dynamic Programming',
-    subpatterns: ['grid DP', 'subsequence DP'],
-    companies: ['Google', 'Meta'],
-  },
-  {
-    title: 'Number of Islands',
-    slug: 'number-of-islands',
-    difficulty: 'Medium',
-    topic: 'Graph',
-    subpatterns: ['DFS traversal', 'component traversal'],
-    companies: ['Amazon', 'Meta', 'Microsoft'],
-  },
-  {
-    title: 'Course Schedule',
-    slug: 'course-schedule',
-    difficulty: 'Medium',
-    topic: 'Graph',
-    subpatterns: ['topological ordering'],
-    companies: ['Google', 'Meta', 'Amazon'],
-  },
-  {
-    title: 'Clone Graph',
-    slug: 'clone-graph',
-    difficulty: 'Medium',
-    topic: 'Graph',
-    subpatterns: ['BFS shortest paths', 'DFS traversal'],
-    companies: ['Meta', 'Amazon'],
-  },
-  {
-    title: 'Network Delay Time',
-    slug: 'network-delay-time',
-    difficulty: 'Medium',
-    topic: 'Graph',
-    subpatterns: ['weighted path reasoning'],
-    companies: ['Google', 'Microsoft'],
-  },
-  {
-    title: 'Redundant Connection',
-    slug: 'redundant-connection',
-    difficulty: 'Medium',
-    topic: 'Graph',
-    subpatterns: ['union-find connectivity'],
-    companies: ['Amazon', 'Google'],
-  },
-  {
-    title: 'Binary Tree Level Order Traversal',
-    slug: 'binary-tree-level-order-traversal',
-    difficulty: 'Medium',
-    topic: 'Tree',
-    subpatterns: ['level-order batching'],
-    companies: ['Amazon', 'Meta', 'Microsoft'],
-  },
-  {
-    title: 'Validate Binary Search Tree',
-    slug: 'validate-binary-search-tree',
-    difficulty: 'Medium',
-    topic: 'Tree',
-    subpatterns: ['BST invariants'],
-    companies: ['Google', 'Meta'],
-  },
-  {
-    title: 'Lowest Common Ancestor of a Binary Tree',
-    slug: 'lowest-common-ancestor-of-a-binary-tree',
-    difficulty: 'Medium',
-    topic: 'Tree',
-    subpatterns: ['lowest common ancestor', 'tree DFS'],
-    companies: ['Meta', 'Amazon', 'Microsoft'],
-  },
-  {
-    title: 'Binary Tree Maximum Path Sum',
-    slug: 'binary-tree-maximum-path-sum',
-    difficulty: 'Hard',
-    topic: 'Tree',
-    subpatterns: ['tree DP', 'path aggregation'],
-    companies: ['Google', 'Meta'],
-  },
-  {
-    title: 'Two Sum',
-    slug: 'two-sum',
-    difficulty: 'Easy',
-    topic: 'Array',
-    subpatterns: ['hashing for complements'],
-    companies: ['Amazon', 'Meta', 'Microsoft'],
-  },
-  {
-    title: 'Product of Array Except Self',
-    slug: 'product-of-array-except-self',
-    difficulty: 'Medium',
-    topic: 'Array',
-    subpatterns: ['prefix sums'],
-    companies: ['Meta', 'Amazon'],
-  },
-  {
-    title: 'Trapping Rain Water',
-    slug: 'trapping-rain-water',
-    difficulty: 'Hard',
-    topic: 'Array',
-    subpatterns: ['two pointers'],
-    companies: ['Google', 'Meta', 'Amazon'],
-  },
-  {
-    title: 'Sliding Window Maximum',
-    slug: 'sliding-window-maximum',
-    difficulty: 'Hard',
-    topic: 'Queue',
-    subpatterns: ['monotonic queue', 'window scheduling'],
-    companies: ['Google', 'Amazon'],
-  },
-  {
-    title: 'Longest Substring Without Repeating Characters',
-    slug: 'longest-substring-without-repeating-characters',
-    difficulty: 'Medium',
-    topic: 'String',
-    subpatterns: ['sliding window', 'frequency maps'],
-    companies: ['Amazon', 'Meta', 'Google'],
-  },
-  {
-    title: 'Group Anagrams',
-    slug: 'group-anagrams',
-    difficulty: 'Medium',
-    topic: 'Hash Table',
-    subpatterns: ['grouping', 'frequency counting'],
-    companies: ['Meta', 'Amazon'],
-  },
-  {
-    title: 'Minimum Window Substring',
-    slug: 'minimum-window-substring',
-    difficulty: 'Hard',
-    topic: 'String',
-    subpatterns: ['sliding window', 'frequency maps'],
-    companies: ['Meta', 'Google'],
-  },
-  {
-    title: 'Search in Rotated Sorted Array',
-    slug: 'search-in-rotated-sorted-array',
-    difficulty: 'Medium',
-    topic: 'Binary Search',
-    subpatterns: ['rotated arrays', 'boundary search'],
-    companies: ['Amazon', 'Microsoft'],
-  },
-  {
-    title: 'Koko Eating Bananas',
-    slug: 'koko-eating-bananas',
-    difficulty: 'Medium',
-    topic: 'Binary Search',
-    subpatterns: ['answer search'],
-    companies: ['Google', 'Amazon'],
-  },
-  {
-    title: 'Merge k Sorted Lists',
-    slug: 'merge-k-sorted-lists',
-    difficulty: 'Hard',
-    topic: 'Linked List',
-    subpatterns: ['pointer rewiring', 'divide and conquer'],
-    companies: ['Google', 'Meta', 'Amazon'],
-  },
-  {
-    title: 'Reverse Nodes in k-Group',
-    slug: 'reverse-nodes-in-k-group',
-    difficulty: 'Hard',
-    topic: 'Linked List',
-    subpatterns: ['k-group manipulation', 'pointer rewiring'],
-    companies: ['Meta', 'Microsoft'],
-  },
-  {
-    title: 'Subsets',
-    slug: 'subsets',
-    difficulty: 'Medium',
-    topic: 'Backtracking',
-    subpatterns: ['decision trees', 'subset generation'],
-    companies: ['Amazon', 'Meta'],
-  },
-  {
-    title: 'Word Search',
-    slug: 'word-search',
-    difficulty: 'Medium',
-    topic: 'Backtracking',
-    subpatterns: ['state restoration', 'pruning'],
-    companies: ['Amazon', 'Microsoft'],
-  },
-];
+interface TopicFamilyRecord {
+  tagName: string;
+  tagSlug: string;
+  family: string;
+  problemsSolved: number;
+  level: TopicLevel;
+  retention?: TopicRetentionEntry;
+}
 
-function getTopicFamily(topic: string): string {
-  if (topic === 'Depth-First Search' || topic === 'Breadth-First Search') return 'Graph';
-  return topic;
+interface WeightedTopicDefinition {
+  topic: string;
+  weight: number;
+  depthTarget: number;
+}
+
+const CORE_TOPIC_TARGET = 30;
+const INTERVIEW_VOLUME_TARGET = 400;
+const MEDIUM_SOLVED_TARGET = 180;
+const HARD_SOLVED_TARGET = 60;
+const HARD_SHARE_TARGET = 15;
+const COMPANY_TOPIC_DEPTH_TARGET = 8;
+const INTERVIEW_TOPIC_DEPTH_TARGET = 10;
+const TOPIC_DEEP_DIVE_TARGET = 15;
+
+function buildWeightedTopicDefinitions(
+  topics: CompanyTopicSignal[],
+  defaultDepthTarget: number,
+): WeightedTopicDefinition[] {
+  const byFamily = new Map<string, WeightedTopicDefinition>();
+
+  for (const topic of topics) {
+    const family = getTopicFamily(topic.topic);
+    const weight = Math.max(0, topic.weight);
+    if (!family || weight <= 0) continue;
+
+    const depthTarget = Math.max(1, Math.round(topic.depthTarget ?? defaultDepthTarget));
+    const existing = byFamily.get(family);
+
+    if (existing) {
+      existing.weight += weight;
+      existing.depthTarget = Math.max(existing.depthTarget, depthTarget);
+    } else {
+      byFamily.set(family, { topic: family, weight, depthTarget });
+    }
+  }
+
+  return Array.from(byFamily.values()).sort((a, b) => b.weight - a.weight);
+}
+
+function mergeWeightedTopicDefinitions(
+  groups: WeightedTopicDefinition[][],
+): WeightedTopicDefinition[] {
+  const byFamily = new Map<string, WeightedTopicDefinition>();
+
+  for (const group of groups) {
+    for (const topic of group) {
+      const existing = byFamily.get(topic.topic);
+
+      if (existing) {
+        existing.weight += topic.weight;
+        existing.depthTarget = Math.max(existing.depthTarget, topic.depthTarget);
+      } else {
+        byFamily.set(topic.topic, { ...topic });
+      }
+    }
+  }
+
+  return Array.from(byFamily.values()).sort((a, b) => b.weight - a.weight);
+}
+
+function toFiniteNumber(value: unknown): number | null {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : null;
+}
+
+function toNonNegativeInteger(value: unknown): number {
+  const numeric = toFiniteNumber(value);
+  return numeric === null ? 0 : Math.max(0, Math.round(numeric));
+}
+
+function clamp(value: number, min: number, max: number): number {
+  if (!Number.isFinite(value)) return min;
+  return Math.max(min, Math.min(max, value));
+}
+
+function clampScore(value: number): number {
+  return Math.round(clamp(value, 0, 100));
+}
+
+function ratio(numerator: number, denominator: number): number {
+  if (!Number.isFinite(numerator) || !Number.isFinite(denominator) || denominator <= 0) return 0;
+  return clamp(numerator / denominator, 0, 1);
+}
+
+function weightedTopicCoverage(
+  topicDefinitions: WeightedTopicDefinition[],
+  topicStatsMap: Map<string, TopicFamilyRecord>,
+): number {
+  const totalWeight = topicDefinitions.reduce((acc, topic) => acc + topic.weight, 0);
+  if (totalWeight <= 0) return 0;
+
+  return topicDefinitions.reduce((acc, topic) => {
+    const solved = topicStatsMap.get(topic.topic)?.problemsSolved ?? 0;
+    return acc + ratio(solved, topic.depthTarget) * topic.weight;
+  }, 0) / totalWeight;
+}
+
+function scoreFromTarget(value: number, target: number, maxScore: number): number {
+  return Math.min(maxScore, Math.round(ratio(value, target) * maxScore));
+}
+
+function roundTo(value: number, digits = 1): number {
+  if (!Number.isFinite(value)) return 0;
+  const factor = 10 ** digits;
+  return Math.round(value * factor) / factor;
+}
+
+function percentParts(values: number[]): number[] {
+  const safeValues = values.map((value) => Math.max(0, Number.isFinite(value) ? value : 0));
+  const total = safeValues.reduce((acc, value) => acc + value, 0);
+  if (total <= 0) return safeValues.map(() => 0);
+
+  const exact = safeValues.map((value) => (value / total) * 100);
+  const floored = exact.map(Math.floor);
+  const remainder = 100 - floored.reduce((acc, value) => acc + value, 0);
+  const bonusIndexes = new Set(
+    exact
+      .map((candidate, candidateIndex) => ({ candidateIndex, fraction: candidate - Math.floor(candidate) }))
+      .sort((a, b) => b.fraction - a.fraction)
+      .slice(0, remainder)
+      .map((entry) => entry.candidateIndex),
+  );
+
+  return floored.map((value, index) => value + (bonusIndexes.has(index) ? 1 : 0));
 }
 
 function buildLocalDayHistory(calendar: Record<string, number>): Map<number, number> {
   return Object.entries(calendar).reduce<Map<number, number>>((history, [ts, count]) => {
-    const date = new Date(parseInt(ts, 10) * 1000);
+    const timestamp = toFiniteNumber(ts);
+    const safeCount = toNonNegativeInteger(count);
+    if (timestamp === null || timestamp <= 0 || safeCount <= 0) return history;
+
+    const date = new Date(timestamp * 1000);
     const dayStart = new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
-    history.set(dayStart, (history.get(dayStart) ?? 0) + count);
+    if (!Number.isFinite(dayStart)) return history;
+
+    history.set(dayStart, (history.get(dayStart) ?? 0) + safeCount);
     return history;
   }, new Map());
 }
@@ -416,10 +311,77 @@ function buildRetentionFamilyMap(
   );
 }
 
+function normalizeTopicStats(profile: LeetCodeProfile): TopicWithLevel[] {
+  const sources: Array<{ level: TopicLevel; stats: TagStat[] }> = [
+    { level: 'Advanced', stats: profile.tagStats?.advanced ?? [] },
+    { level: 'Intermediate', stats: profile.tagStats?.intermediate ?? [] },
+    { level: 'Fundamental', stats: profile.tagStats?.fundamental ?? [] },
+  ];
+
+  return sources.flatMap(({ level, stats }) => stats.flatMap((topic): TopicWithLevel[] => {
+    const tagName = typeof topic.tagName === 'string' ? topic.tagName.trim() : '';
+    const tagSlug = typeof topic.tagSlug === 'string'
+      ? topic.tagSlug.trim()
+      : tagName.toLowerCase().replace(/\s+/g, '-');
+    const problemsSolved = toNonNegativeInteger(topic.problemsSolved);
+    if (!tagName || problemsSolved <= 0) return [];
+
+    return [{ tagName, tagSlug, problemsSolved, level }];
+  }));
+}
+
+function buildTopicFamilyRecords(
+  topics: TopicWithLevel[],
+  retentionMap: Map<string, TopicRetentionEntry>,
+): TopicFamilyRecord[] {
+  const levelWeight: Record<TopicLevel, number> = {
+    Advanced: 3,
+    Intermediate: 2,
+    Fundamental: 1,
+  };
+
+  const byFamily = new Map<string, TopicFamilyRecord>();
+  for (const topic of topics) {
+    const family = getTopicFamily(topic.tagName);
+    const existing = byFamily.get(family);
+
+    if (
+      !existing ||
+      topic.problemsSolved > existing.problemsSolved ||
+      (topic.problemsSolved === existing.problemsSolved && levelWeight[topic.level] > levelWeight[existing.level])
+    ) {
+      byFamily.set(family, {
+        tagName: topic.tagName,
+        tagSlug: topic.tagSlug,
+        family,
+        problemsSolved: topic.problemsSolved,
+        level: topic.level,
+        retention: retentionMap.get(family),
+      });
+    }
+  }
+
+  return Array.from(byFamily.values()).sort((a, b) => b.problemsSolved - a.problemsSolved);
+}
+
 export function computeAnalytics(profile: LeetCodeProfile, options: AnalyticsOptions = {}): Analytics {
   const { nowMs = Date.now(), srsStates = {}, targetCompany } = options;
   const cal = profile.submissionCalendar ?? {};
   const localDayHistory = buildLocalDayHistory(cal);
+  const retentionBreakdown = getTopicRetentionBreakdown(srsStates, nowMs);
+  const retentionMap = buildRetentionFamilyMap(retentionBreakdown);
+
+  const easySolved = toNonNegativeInteger(profile.easySolved);
+  const mediumSolved = toNonNegativeInteger(profile.mediumSolved);
+  const hardSolved = toNonNegativeInteger(profile.hardSolved);
+  const solvedByDifficulty = easySolved + mediumSolved + hardSolved;
+  const totalSolved = Math.max(toNonNegativeInteger(profile.totalSolved), solvedByDifficulty);
+  const contestAttended = toNonNegativeInteger(profile.contestAttended);
+  const currentStreak = toNonNegativeInteger(profile.currentStreak);
+  const recentSubmissions = Array.isArray(profile.recentSubmissions) ? profile.recentSubmissions : [];
+  const allTopics = normalizeTopicStats(profile);
+  const topicRecords = buildTopicFamilyRecords(allTopics, retentionMap);
+  const topicStatsMap = new Map(topicRecords.map((topic) => [topic.family, topic]));
 
   const getNDays = (n: number): number[] => {
     const result: number[] = new Array(n).fill(0);
@@ -439,9 +401,9 @@ export function computeAnalytics(profile: LeetCodeProfile, options: AnalyticsOpt
 
   const sum = (arr: number[]) => arr.reduce((a, b) => a + b, 0);
   const activeDays90 = last90.filter((d) => d > 0).length;
-  const totalSubs90 = sum(last90);
-  const weeklyAvg = Math.round(totalSubs90 / 13);
-  const dailyAvgOnActiveDays = activeDays90 > 0 ? Math.round(totalSubs90 / activeDays90) : 0;
+  const totalSubmissions90 = sum(last90);
+  const weeklySubmissionsAvg = roundTo(totalSubmissions90 / (90 / 7));
+  const dailySubmissionsAvgOnActiveDays = activeDays90 > 0 ? roundTo(totalSubmissions90 / activeDays90) : 0;
 
   let maxStreak90 = 0;
   let curStreak = 0;
@@ -450,11 +412,11 @@ export function computeAnalytics(profile: LeetCodeProfile, options: AnalyticsOpt
     maxStreak90 = Math.max(maxStreak90, curStreak);
   }
 
-  const activityScore = Math.round((activeDays90 / 90) * 40);
-  const streakScore = Math.min(30, Math.round((maxStreak90 / 30) * 30));
-  const intensityScore = Math.min(20, Math.round((Math.min(dailyAvgOnActiveDays, 5) / 5) * 20));
+  const activityScore = scoreFromTarget(activeDays90, 90, 40);
+  const streakScore = scoreFromTarget(maxStreak90, 30, 30);
+  const intensityScore = scoreFromTarget(Math.min(dailySubmissionsAvgOnActiveDays, 5), 5, 20);
   const recencyScore = sum(last7) > 0 ? 10 : 0;
-  const consistencyScore = activityScore + streakScore + intensityScore + recencyScore;
+  const consistencyScore = clampScore(activityScore + streakScore + intensityScore + recencyScore);
 
   const consistencyBreakdown = [
     { label: 'Activity (active days)', score: activityScore, max: 40 },
@@ -463,40 +425,19 @@ export function computeAnalytics(profile: LeetCodeProfile, options: AnalyticsOpt
     { label: 'Recent activity', score: recencyScore, max: 10 },
   ];
 
-  const allTopics = [
-    ...(profile.tagStats?.advanced ?? []).map((t) => ({ ...t, level: 'Advanced' })),
-    ...(profile.tagStats?.intermediate ?? []).map((t) => ({ ...t, level: 'Intermediate' })),
-    ...(profile.tagStats?.fundamental ?? []).map((t) => ({ ...t, level: 'Fundamental' })),
-  ];
+  const topicDiversity = scoreFromTarget(topicRecords.length, CORE_TOPIC_TARGET, 100);
 
-  const topicDiversity = Math.min(100, Math.round((allTopics.filter((t) => t.problemsSolved > 0).length / 30) * 100));
-
-  const strengthTopics = allTopics
+  const strengthTopics = topicRecords
     .filter((t) => t.problemsSolved >= 5)
     .sort((a, b) => b.problemsSolved - a.problemsSolved)
     .slice(0, 8)
-    .map((t) => ({ name: t.tagName, count: t.problemsSolved, level: t.level }));
+    .map((t) => ({ name: t.family, count: t.problemsSolved, level: t.level }));
 
-  const weakTopics = allTopics
+  const weakTopics = topicRecords
     .filter((t) => t.problemsSolved > 0 && t.problemsSolved < 5)
     .sort((a, b) => a.problemsSolved - b.problemsSolved)
     .slice(0, 6)
-    .map((t) => ({ name: t.tagName, level: t.level }));
-
-  const solvedScore = Math.min(35, Math.round((profile.totalSolved / 400) * 35));
-  const hardScore = Math.min(20, Math.round((profile.hardSolved / 60) * 20));
-  const topicScore = Math.min(20, Math.round((topicDiversity / 100) * 20));
-  const consistBonus = Math.min(15, Math.round((consistencyScore / 100) * 15));
-  const contestScore = Math.min(10, Math.round((profile.contestAttended / 5) * 10));
-  const interviewReadiness = solvedScore + hardScore + topicScore + consistBonus + contestScore;
-
-  const readinessBreakdown = [
-    { label: 'Problems solved', score: solvedScore, max: 35, note: `${profile.totalSolved}/400 target` },
-    { label: 'Hard problems', score: hardScore, max: 20, note: `${profile.hardSolved}/60 target` },
-    { label: 'Topic coverage', score: topicScore, max: 20, note: `${topicDiversity}% diversity` },
-    { label: 'Consistency', score: consistBonus, max: 15, note: `${consistencyScore}/100 score` },
-    { label: 'Contest experience', score: contestScore, max: 10, note: `${profile.contestAttended} contests` },
-  ];
+    .map((t) => ({ name: t.family, level: t.level }));
 
   const last7sum = sum(last7);
   const prev7sum = sum(prev7);
@@ -515,7 +456,9 @@ export function computeAnalytics(profile: LeetCodeProfile, options: AnalyticsOpt
       : `${last7sum} submissions this week. Healthy pace - keep showing up.`;
   }
 
-  const plateauDetected = sum(last30) > 5 && Math.abs(sum(last30) - sum(prev30)) < sum(prev30) * 0.15;
+  const l30 = sum(last30);
+  const p30 = sum(prev30);
+  const plateauDetected = p30 > 0 && l30 > 5 && Math.abs(l30 - p30) < p30 * 0.15;
   const plateauNote = plateauDetected
     ? 'Your solve rate has been nearly identical for 60 days. Try a harder difficulty or new topic to break through.'
     : '';
@@ -529,15 +472,10 @@ export function computeAnalytics(profile: LeetCodeProfile, options: AnalyticsOpt
     ? dayNames[dayTotals.indexOf(Math.max(...dayTotals))]
     : 'No activity yet';
 
-  const l30 = sum(last30);
-  const p30 = sum(prev30);
   const solveVelocityTrend: Analytics['solveVelocityTrend'] =
     l30 > p30 * 1.15 ? 'increasing' : l30 < p30 * 0.85 ? 'decreasing' : 'stable';
 
-  const totalSolvedByDifficulty = profile.easySolved + profile.mediumSolved + profile.hardSolved;
-  const easyPct = totalSolvedByDifficulty > 0 ? Math.round((profile.easySolved / totalSolvedByDifficulty) * 100) : 0;
-  const medPct = totalSolvedByDifficulty > 0 ? Math.round((profile.mediumSolved / totalSolvedByDifficulty) * 100) : 0;
-  const hardPct = totalSolvedByDifficulty > 0 ? Math.round((profile.hardSolved / totalSolvedByDifficulty) * 100) : 0;
+  const [easyPct, medPct, hardPct] = percentParts([easySolved, mediumSolved, hardSolved]);
   const difficultyRatio = `${easyPct}% Easy | ${medPct}% Medium | ${hardPct}% Hard`;
 
   let progressionHealth: ProgressionHealth = 'stagnant';
@@ -552,13 +490,23 @@ export function computeAnalytics(profile: LeetCodeProfile, options: AnalyticsOpt
     progressionNote = `Moderate hard rate (${hardPct}%). Gradually increase hard attempts.`;
   }
 
-  const remaining = Math.max(0, 400 - profile.totalSolved);
-  const estimatedWeeksToReady = weeklyAvg > 0 ? Math.ceil(remaining / weeklyAvg) : 99;
-
-  const recentAccepted = profile.recentSubmissions.filter((s) => s.statusDisplay === 'Accepted').length;
-  const recentAcceptanceRate = profile.recentSubmissions.length > 0
-    ? Math.round((recentAccepted / profile.recentSubmissions.length) * 100)
+  const recentAccepted = recentSubmissions.filter((s) => isAcceptedSubmissionStatus(s.statusDisplay)).length;
+  const recentAcceptanceRate = recentSubmissions.length > 0
+    ? clampScore((recentAccepted / recentSubmissions.length) * 100)
     : 0;
+  const reliableRecentAcceptance = recentSubmissions.length >= 20;
+  const qualityAcceptanceRate = reliableRecentAcceptance
+    ? recentAcceptanceRate
+    : toNonNegativeInteger(profile.acceptanceRate);
+  const acceptanceMultiplier = recentSubmissions.length > 0
+    ? recentAcceptanceRate / 100
+    : ratio(toNonNegativeInteger(profile.acceptanceRate), 100);
+  const weeklyAcceptedSubmissionsEstimate = roundTo(weeklySubmissionsAvg * acceptanceMultiplier);
+  const remaining = Math.max(0, INTERVIEW_VOLUME_TARGET - totalSolved);
+  const estimatedWeeksToVolumeTarget = weeklyAcceptedSubmissionsEstimate > 0
+    ? Math.ceil(remaining / weeklyAcceptedSubmissionsEstimate)
+    : 99;
+
 
   let solverPersonality: PersonalityType;
   let personalityEmoji: string;
@@ -570,7 +518,7 @@ export function computeAnalytics(profile: LeetCodeProfile, options: AnalyticsOpt
     personalityEmoji = 'ARCH';
     personalityDesc = 'You thrive on hard problems and think in systems.';
     personalityTraits = ['Hard-problem focused', 'Deep thinker', 'Quality over quantity'];
-  } else if (profile.currentStreak >= 30 || activeDays90 >= 60) {
+  } else if (currentStreak >= 30 || activeDays90 >= 60) {
     solverPersonality = 'The Grinder';
     personalityEmoji = 'HOT';
     personalityDesc = 'Daily discipline is your superpower.';
@@ -580,7 +528,7 @@ export function computeAnalytics(profile: LeetCodeProfile, options: AnalyticsOpt
     personalityEmoji = 'FAST';
     personalityDesc = 'High volume and fast completions drive your momentum.';
     personalityTraits = ['Volume-first', 'Fast executor', 'Broad coverage'];
-  } else if (allTopics.filter((t) => t.problemsSolved > 3).length >= 12) {
+  } else if (topicRecords.filter((t) => t.problemsSolved > 3).length >= 12) {
     solverPersonality = 'The Explorer';
     personalityEmoji = 'MAP';
     personalityDesc = 'You map the problem landscape across many domains.';
@@ -592,26 +540,63 @@ export function computeAnalytics(profile: LeetCodeProfile, options: AnalyticsOpt
     personalityTraits = ['Depth-first', 'Topic specialist', 'Selective and precise'];
   }
 
-  const solvedTopicNames = new Set(allTopics.filter((t) => t.problemsSolved >= 3).map((t) => t.tagName));
   const availableCompanies = Object.keys(COMPANY_TOPICS);
+  const companyWeightedTopics = Object.fromEntries(
+    Object.entries(COMPANY_TOPICS).map(([company, { topics }]) => [
+      company,
+      buildWeightedTopicDefinitions(topics, COMPANY_TOPIC_DEPTH_TARGET),
+    ]),
+  ) as Record<string, WeightedTopicDefinition[]>;
+  const companyTopicFamilies = Object.fromEntries(
+    Object.entries(companyWeightedTopics).map(([company, topics]) => [
+      company,
+      topics.map((topic) => topic.topic),
+    ]),
+  ) as Record<string, string[]>;
 
-  const companyReadiness: CompanyReadiness[] = Object.entries(COMPANY_TOPICS).map(([company, { topics, logo }]) => {
-    const covered = topics.filter((topic) => solvedTopicNames.has(topic));
-    const missing = topics.filter((topic) => !solvedTopicNames.has(topic));
-    const score = Math.round((covered.length / topics.length) * 100);
+  const companyReadiness: CompanyReadiness[] = Object.entries(COMPANY_TOPICS).map(([
+    company,
+    { logo, prepSignals, researchBasis },
+  ]) => {
+    const weightedTopics = companyWeightedTopics[company] ?? [];
+    const scoredTopics = weightedTopics.map((topic) => {
+      const solved = topicStatsMap.get(topic.topic)?.problemsSolved ?? 0;
+      const coverage = ratio(solved, topic.depthTarget);
+      return {
+        topic: topic.topic,
+        solved,
+        coverage,
+        weight: topic.weight,
+        gapImpact: (1 - coverage) * topic.weight,
+      };
+    });
+    const readinessScore = clampScore(weightedTopicCoverage(weightedTopics, topicStatsMap) * 100);
+    const covered = scoredTopics
+      .filter((topic) => topic.coverage >= 0.7)
+      .sort((a, b) => (b.coverage * b.weight) - (a.coverage * a.weight))
+      .map((topic) => topic.topic);
+    const missing = scoredTopics
+      .filter((topic) => topic.coverage < 0.7)
+      .sort((a, b) => b.gapImpact - a.gapImpact)
+      .map((topic) => topic.topic);
+    const missingLabel = missing.slice(0, 2).join(' and ') || 'mock interview pacing';
+    const prepFocus = prepSignals[0]?.label.toLowerCase() ?? 'mock interview communication';
 
     return {
       company,
       logo,
-      readinessScore: score,
+      readinessScore,
       topTopics: covered.slice(0, 3),
       missingTopics: missing.slice(0, 3),
+      prepSignals,
+      researchBasis,
+      scoreBasis: 'Weighted coding-topic depth from this LeetCode profile; off-platform design and behavioral prep are listed but not auto-scored.',
       recommendation:
-        score >= 75
-          ? 'Ready to apply - focus on mock interviews.'
-          : score >= 50
-            ? `Close. Strengthen ${missing.slice(0, 2).join(' and ')}.`
-            : `Start with ${missing.slice(0, 2).join(' and ')} - they are still major gaps.`,
+        readinessScore >= 75
+          ? `Coding fit is strong. Pair it with ${prepFocus} before the loop.`
+          : readinessScore >= 50
+            ? `Close on coding. Strengthen ${missingLabel}, then rehearse ${prepFocus}.`
+            : `Start with ${missingLabel}; these carry the most weighted gap for this company.`,
     };
   });
 
@@ -620,34 +605,158 @@ export function computeAnalytics(profile: LeetCodeProfile, options: AnalyticsOpt
   const bestCompanyScore = sortedCompanies[0]?.readinessScore || 0;
   const selectedCompany = availableCompanies.includes(targetCompany ?? '') ? (targetCompany as string) : bestCompanyMatch;
 
-  const retentionBreakdown = getTopicRetentionBreakdown(srsStates, nowMs);
-  const retentionMap = buildRetentionFamilyMap(retentionBreakdown);
+  const interviewTopicDefinitions = mergeWeightedTopicDefinitions(Object.values(companyWeightedTopics));
+  const topicDepthPct = clampScore(
+    weightedTopicCoverage(
+      interviewTopicDefinitions.map((topic) => ({
+        ...topic,
+        depthTarget: Math.max(topic.depthTarget, INTERVIEW_TOPIC_DEPTH_TARGET),
+      })),
+      topicStatsMap,
+    ) * 100,
+  );
+  const volumeScore = Math.min(
+    24,
+    scoreFromTarget(totalSolved, INTERVIEW_VOLUME_TARGET, 18)
+    + scoreFromTarget(mediumSolved, MEDIUM_SOLVED_TARGET, 6),
+  );
+  const hardDepthScore = Math.min(
+    22,
+    scoreFromTarget(hardSolved, HARD_SOLVED_TARGET, 14)
+    + scoreFromTarget(hardPct, HARD_SHARE_TARGET, 8),
+  );
+  const topicReadinessScore = Math.min(
+    18,
+    Math.round(((topicDiversity * 0.35) + (topicDepthPct * 0.65)) * 0.18),
+  );
+  const practiceQualityScore = Math.min(
+    14,
+    scoreFromTarget(consistencyScore, 100, 8)
+    + scoreFromTarget(qualityAcceptanceRate, 70, 4)
+    + scoreFromTarget(contestAttended, 3, 2),
+  );
+  const companyFitScore = scoreFromTarget(bestCompanyScore, 80, 12);
+  const srsStateCount = Object.keys(srsStates).length;
+  const memoryHealthScore = srsStateCount > 0 ? computeMemoryHealth(srsStates, nowMs) : null;
+  const memoryReadinessScore = memoryHealthScore === null
+    ? 5
+    : scoreFromTarget(memoryHealthScore, 80, 10);
+  const rawInterviewReadiness = clampScore(
+    volumeScore
+    + hardDepthScore
+    + topicReadinessScore
+    + practiceQualityScore
+    + companyFitScore
+    + memoryReadinessScore,
+  );
+  const readinessCaps: number[] = [];
+
+  if (totalSolved < 75) readinessCaps.push(45);
+  else if (totalSolved < 150) readinessCaps.push(58);
+  else if (totalSolved < 250) readinessCaps.push(72);
+
+  if (hardSolved < 10) readinessCaps.push(62);
+  else if (hardSolved < 25) readinessCaps.push(76);
+
+  if (hardPct < 5 && totalSolved >= 80) readinessCaps.push(68);
+  else if (hardPct < 10 && totalSolved >= 120) readinessCaps.push(82);
+
+  if (topicDepthPct < 35) readinessCaps.push(70);
+  else if (topicDepthPct < 55) readinessCaps.push(82);
+
+  if (bestCompanyScore < 40) readinessCaps.push(68);
+  else if (bestCompanyScore < 60) readinessCaps.push(80);
+
+  if (consistencyScore < 30) readinessCaps.push(72);
+  else if (consistencyScore < 50) readinessCaps.push(84);
+
+  if (last7sum === 0 && totalSolved > 0) readinessCaps.push(86);
+
+  if (reliableRecentAcceptance && recentAcceptanceRate < 45) readinessCaps.push(70);
+  else if (reliableRecentAcceptance && recentAcceptanceRate < 60) readinessCaps.push(82);
+
+  if (memoryHealthScore !== null && memoryHealthScore < 45) readinessCaps.push(72);
+  else if (memoryHealthScore !== null && memoryHealthScore < 60) readinessCaps.push(84);
+
+  const interviewReadiness = Math.min(rawInterviewReadiness, ...readinessCaps, 100);
+  const readinessBreakdown = [
+    {
+      label: 'Problem volume',
+      score: volumeScore,
+      max: 24,
+      note: `${totalSolved}/${INTERVIEW_VOLUME_TARGET} total, ${mediumSolved}/${MEDIUM_SOLVED_TARGET} medium`,
+    },
+    {
+      label: 'Hard depth',
+      score: hardDepthScore,
+      max: 22,
+      note: `${hardSolved}/${HARD_SOLVED_TARGET} hard, ${hardPct}% hard share`,
+    },
+    {
+      label: 'Topic depth',
+      score: topicReadinessScore,
+      max: 18,
+      note: `${topicDiversity}% breadth, ${topicDepthPct}% core depth`,
+    },
+    {
+      label: 'Practice quality',
+      score: practiceQualityScore,
+      max: 14,
+      note: `${consistencyScore}/100 consistency, ${qualityAcceptanceRate}% acceptance`,
+    },
+    {
+      label: 'Company fit',
+      score: companyFitScore,
+      max: 12,
+      note: `${bestCompanyMatch} ${bestCompanyScore}% topic fit`,
+    },
+    {
+      label: 'Memory retention',
+      score: memoryReadinessScore,
+      max: 10,
+      note: memoryHealthScore === null
+        ? 'No spaced-review signal yet'
+        : `${memoryHealthScore}% retained across ${srsStateCount} tracked problems`,
+    },
+  ];
+  const confidenceScore = Math.round(
+    (totalSolved > 0 ? 18 : 0)
+    + (totalSubmissions90 > 0 ? 16 : 0)
+    + (reliableRecentAcceptance ? 18 : recentSubmissions.length > 0 ? 9 : 0)
+    + (topicRecords.length >= 8 ? 18 : topicRecords.length >= 3 ? 9 : 0)
+    + (topicDepthPct >= 35 ? 12 : topicDepthPct > 0 ? 6 : 0)
+    + (srsStateCount >= 20 ? 18 : srsStateCount >= 5 ? 10 : srsStateCount > 0 ? 5 : 0),
+  );
+  const readinessConfidence: ReadinessConfidence =
+    confidenceScore >= 75 ? 'high' : confidenceScore >= 45 ? 'medium' : 'low';
+  const readinessConfidenceNote =
+    readinessConfidence === 'high'
+      ? 'Enough profile, recent activity, topic, and memory signals are available.'
+      : readinessConfidence === 'medium'
+        ? 'Useful estimate, but one or more data signals are still thin.'
+        : 'Early estimate only. Add recent activity and SRS reviews to improve confidence.';
+
   const recentAcceptedSlugs = new Set(
-    profile.recentSubmissions
-      .filter((submission) => submission.statusDisplay === 'Accepted')
-      .map((submission) => submission.titleSlug),
+    recentSubmissions
+      .filter((submission) => isAcceptedSubmissionStatus(submission.statusDisplay))
+      .map((submission) => submission.titleSlug)
+      .filter((slug) => typeof slug === 'string' && slug.trim().length > 0),
   );
   const solvedProblemSlugs = new Set([...Object.keys(srsStates), ...recentAcceptedSlugs]);
 
-  const topicRecords = allTopics
-    .map((topic) => ({
-      ...topic,
-      family: getTopicFamily(topic.tagName),
-      retention: retentionMap.get(getTopicFamily(topic.tagName)),
-    }))
-    .filter((topic) => topic.problemsSolved > 0)
+  const advancedTopics = allTopics
+    .filter((topic) => topic.level === 'Advanced')
     .sort((a, b) => b.problemsSolved - a.problemsSolved);
-
-  const topAdvanced = (profile.tagStats?.advanced ?? [])[0];
-  const weakestAdvanced = [...(profile.tagStats?.advanced ?? [])].sort((a, b) => a.problemsSolved - b.problemsSolved)[0];
+  const topAdvanced = advancedTopics[0];
+  const weakestAdvanced = [...advancedTopics].sort((a, b) => a.problemsSolved - b.problemsSolved)[0];
 
   let nextProblemSuggestion: NextProblemSuggestion;
-  if (hardPct < 10 && profile.mediumSolved > 50) {
+  if (hardPct < 10 && mediumSolved > 50) {
     nextProblemSuggestion = {
       reason: 'You have built a solid medium foundation',
       difficulty: 'Hard',
       topics: [topAdvanced?.tagName || 'Dynamic Programming'],
-      explanation: `You've solved ${profile.mediumSolved} medium problems but only ${profile.hardSolved} hard ones. It is time to level up.`,
+      explanation: `You've solved ${mediumSolved} medium problems but only ${hardSolved} hard ones. It is time to level up.`,
     };
   } else if (weakestAdvanced && weakestAdvanced.problemsSolved < 10) {
     nextProblemSuggestion = {
@@ -669,18 +778,18 @@ export function computeAnalytics(profile: LeetCodeProfile, options: AnalyticsOpt
   let verdictStory: string;
   if (interviewReadiness >= 80) {
     verdictLabel = 'Interview Ready';
-    verdictStory = `With ${profile.totalSolved} solved and ${strengthTopics[0]?.name || 'strong topic coverage'} as a major asset, you are ready to apply. Shift focus toward mocks and communication.`;
+    verdictStory = `With ${totalSolved} solved and ${strengthTopics[0]?.name || 'strong topic coverage'} as a major asset, you are ready to apply. Shift focus toward mocks and communication.`;
   } else if (interviewReadiness >= 60) {
     verdictLabel = 'Almost There';
-    const topGapLabel = profile.hardSolved < 60
-      ? `${60 - profile.hardSolved} more hard problems`
+    const topGapLabel = hardSolved < HARD_SOLVED_TARGET
+      ? `${HARD_SOLVED_TARGET - hardSolved} more hard problems`
       : consistencyScore < 50
         ? 'daily consistency'
         : 'topic coverage';
-    verdictStory = `You have a solid base with ${profile.totalSolved} solved. Close the gap on ${topGapLabel} and you will cross the readiness threshold.`;
+    verdictStory = `You have a solid base with ${totalSolved} solved. Close the gap on ${topGapLabel} and you will cross the readiness threshold.`;
   } else if (interviewReadiness >= 40) {
     verdictLabel = 'On Track';
-    verdictStory = `At ${profile.totalSolved} solved, you are building the right base. Prioritize hard problems and a steady habit to accelerate the next jump.`;
+    verdictStory = `At ${totalSolved} solved, you are building the right base. Prioritize hard problems and a steady habit to accelerate the next jump.`;
   } else {
     verdictLabel = 'Keep Building';
     verdictStory = `You're still early in the ramp. Focus on more medium problems, stronger topic coverage, and a stable practice rhythm before targeting major interview loops.`;
@@ -694,11 +803,25 @@ export function computeAnalytics(profile: LeetCodeProfile, options: AnalyticsOpt
       priority: 'critical',
     });
   }
-  if (profile.hardSolved < 60) {
-    const needed = 60 - profile.hardSolved;
+  if (last7sum === 0 && totalSolved > 0) {
+    gaps.push({
+      label: 'Restore recent activity',
+      detail: 'No submissions appeared in the last 7 days, so the readiness score is capped until momentum returns.',
+      priority: consistencyScore < 50 ? 'critical' : 'high',
+    });
+  }
+  if (reliableRecentAcceptance && recentAcceptanceRate < 60) {
+    gaps.push({
+      label: 'Raise recent acceptance',
+      detail: `Recent acceptance is ${recentAcceptanceRate}%. Aim for cleaner first-pass solutions before increasing volume.`,
+      priority: recentAcceptanceRate < 45 ? 'critical' : 'high',
+    });
+  }
+  if (hardSolved < HARD_SOLVED_TARGET) {
+    const needed = HARD_SOLVED_TARGET - hardSolved;
     gaps.push({
       label: `${needed} more hard problem${needed === 1 ? '' : 's'}`,
-      detail: `At ${profile.hardSolved}/60 - hard problems still need the most attention for big-tech loops.`,
+      detail: `At ${hardSolved}/${HARD_SOLVED_TARGET} - hard problems still need the most attention for big-tech loops.`,
       priority: needed > 30 ? 'critical' : 'high',
     });
   }
@@ -710,10 +833,30 @@ export function computeAnalytics(profile: LeetCodeProfile, options: AnalyticsOpt
       priority: 'high',
     });
   }
-  if (profile.totalSolved < 400) {
-    const needed = 400 - profile.totalSolved;
+  if (topicDepthPct < 60) {
     gaps.push({
-      label: `${needed} more problems to 400 target`,
+      label: 'Deepen core patterns',
+      detail: `Core interview topic depth is ${topicDepthPct}%. Breadth alone is not enough for a high readiness score.`,
+      priority: topicDepthPct < 35 ? 'critical' : 'high',
+    });
+  }
+  if (memoryHealthScore !== null && memoryHealthScore < 60) {
+    gaps.push({
+      label: 'Review fading memory',
+      detail: `Tracked memory retention is ${memoryHealthScore}%. Review due cards before treating solved problems as interview-ready.`,
+      priority: memoryHealthScore < 45 ? 'critical' : 'high',
+    });
+  } else if (memoryHealthScore === null) {
+    gaps.push({
+      label: 'Build a memory signal',
+      detail: 'No spaced-review history exists yet, so the readiness score only gives partial credit for memory retention.',
+      priority: 'medium',
+    });
+  }
+  if (totalSolved < INTERVIEW_VOLUME_TARGET) {
+    const needed = INTERVIEW_VOLUME_TARGET - totalSolved;
+    gaps.push({
+      label: `${needed} more problems to ${INTERVIEW_VOLUME_TARGET} target`,
       detail: 'The overall problem volume is still below a strong interview-prep benchmark.',
       priority: needed > 150 ? 'critical' : 'medium',
     });
@@ -725,9 +868,9 @@ export function computeAnalytics(profile: LeetCodeProfile, options: AnalyticsOpt
       priority: 'medium',
     });
   }
+  const priorityRank: Record<Gap['priority'], number> = { critical: 0, high: 1, medium: 2 };
 
-  const topicStatsMap = new Map(topicRecords.map((topic) => [topic.family, topic]));
-  const targetCompanyTopics = new Set(COMPANY_TOPICS[selectedCompany]?.topics ?? []);
+  const targetCompanyTopics = new Set(companyTopicFamilies[selectedCompany] ?? []);
 
   const buildRecommendations = (focusTopic?: string): RecommendedProblem[] => {
     return PROBLEM_CATALOG
@@ -749,7 +892,7 @@ export function computeAnalytics(profile: LeetCodeProfile, options: AnalyticsOpt
         const targetTopicBoost = targetCompanyTopics.has(problem.topic) ? 10 : 0;
         const focusBoost = focusMatch ? 12 : -30;
 
-        const matchScore = topicGapBoost + retentionBoost + weakBoost + companyBoost + targetTopicBoost + mediumBoost + hardPenalty + focusBoost;
+        const matchScore = clampScore(topicGapBoost + retentionBoost + weakBoost + companyBoost + targetTopicBoost + mediumBoost + hardPenalty + focusBoost);
         const reasons = [
           lowPractice ? `you still have light coverage in ${problem.topic}` : `it reinforces ${problem.topic}`,
           lowRetention ? `${problem.topic} retention is fading` : null,
@@ -781,8 +924,8 @@ export function computeAnalytics(profile: LeetCodeProfile, options: AnalyticsOpt
     ).values(),
   )
     .sort((a, b) => {
-      const aReadiness = Math.min(100, (a.problemsSolved / 15) * 100);
-      const bReadiness = Math.min(100, (b.problemsSolved / 15) * 100);
+      const aReadiness = ratio(a.problemsSolved, TOPIC_DEEP_DIVE_TARGET) * 100;
+      const bReadiness = ratio(b.problemsSolved, TOPIC_DEEP_DIVE_TARGET) * 100;
       return aReadiness - bReadiness;
     })
     .slice(0, 6);
@@ -790,16 +933,13 @@ export function computeAnalytics(profile: LeetCodeProfile, options: AnalyticsOpt
   const deepDiveTopics: TopicDeepDive[] = deepDiveCandidates.map((topic) => {
     const subpatterns = TOPIC_SUBPATTERNS[topic.family] ?? [];
     const retention = retentionMap.get(topic.family);
-    const readinessScore = Math.max(
-      18,
-      Math.min(
-        96,
-        Math.round(
-          (topic.problemsSolved / 15) * 55
-          + (retention ? retention.avgRetention * 0.35 : 18)
-          + (targetCompanyTopics.has(topic.family) ? 10 : 0),
-        ),
-      ),
+    const practiceComponent = ratio(topic.problemsSolved, TOPIC_DEEP_DIVE_TARGET) * 55;
+    const retentionComponent = retention ? clamp(retention.avgRetention, 0, 100) * 0.35 : 17.5;
+    const companyComponent = targetCompanyTopics.has(topic.family) ? 10 : 0;
+    const readinessScore = clampScore(
+      practiceComponent
+      + retentionComponent
+      + companyComponent,
     );
     const weakSubpatterns = subpatterns.slice(0, topic.problemsSolved < 3 ? 3 : topic.problemsSolved < 8 ? 2 : 1);
     const strongSignals = [
@@ -844,17 +984,20 @@ export function computeAnalytics(profile: LeetCodeProfile, options: AnalyticsOpt
     consistencyScore,
     consistencyBreakdown,
     interviewReadiness,
+    readinessConfidence,
+    readinessConfidenceNote,
     readinessBreakdown,
     burnoutRisk,
     burnoutNote,
     plateauDetected,
     plateauNote,
     peakDay,
-    weeklyAvg,
-    dailyAvgOnActiveDays,
+    weeklySubmissionsAvg,
+    weeklyAcceptedSubmissionsEstimate,
+    dailySubmissionsAvgOnActiveDays,
     progressionHealth,
     progressionNote,
-    estimatedWeeksToReady,
+    estimatedWeeksToVolumeTarget,
     recentAcceptanceRate,
     hardAttemptRate: hardPct,
     strengthTopics,
@@ -867,7 +1010,7 @@ export function computeAnalytics(profile: LeetCodeProfile, options: AnalyticsOpt
     weeklyData,
     verdictLabel,
     verdictStory,
-    gaps: gaps.slice(0, 4),
+    gaps: gaps.sort((a, b) => priorityRank[a.priority] - priorityRank[b.priority]).slice(0, 5),
     bestCompanyMatch,
     bestCompanyScore,
     availableCompanies,

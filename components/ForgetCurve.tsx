@@ -14,15 +14,15 @@ import type { SM2State } from '@/lib/srs';
 import { computeForgetCurve, getDaysOverdue, getRetentionPercent } from '@/lib/srs';
 
 const C = {
-  accent: '#8B5CF6',
-  easy: '#10B981',
-  hard: '#F43F5E',
-  border: '#2A2A42',
-  surface2: '#181826',
-  surface3: '#222236',
-  textPrimary: '#EAEAF4',
-  textSecondary: '#8A8AAE',
-  textMuted: '#4E4E72',
+  accent: 'var(--accent)',
+  easy: 'var(--easy)',
+  hard: 'var(--hard)',
+  border: 'var(--border)',
+  surface2: 'var(--surface-2)',
+  surface3: 'var(--surface-3)',
+  textPrimary: 'var(--text-primary)',
+  textSecondary: 'var(--text-secondary)',
+  textMuted: 'var(--text-muted)',
 };
 
 interface ForgetCurveProps {
@@ -141,10 +141,10 @@ export function TopicRetentionBars({ breakdown }: TopicRetentionBarsProps) {
               <div style={{
                 height: '100%',
                 width: `${avgRetention}%`,
-                background: `linear-gradient(90deg, ${color}, ${color}99)`,
+                background: color,
                 borderRadius: '2px',
                 transition: 'width 0.8s cubic-bezier(0.22,1,0.36,1)',
-                boxShadow: `0 0 6px ${color}66`,
+                boxShadow: 'var(--glow-accent)',
               }}
               />
             </div>

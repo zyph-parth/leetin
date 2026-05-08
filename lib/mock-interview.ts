@@ -8,6 +8,7 @@
 import type { Analytics } from './analytics';
 import type { SM2State } from './srs';
 import { getDueProblems, getRetentionPercent } from './srs';
+import { normalizeLeetCodeUsername } from './username';
 
 export type InterviewDuration = 45 | 60 | 90;
 
@@ -39,7 +40,7 @@ export interface MockInterview {
 const SESSION_PREFIX = 'leetinsight:mock:session:';
 
 function getSessionKey(username: string): string {
-  return `${SESSION_PREFIX}${username}`;
+  return `${SESSION_PREFIX}${normalizeLeetCodeUsername(username)}`;
 }
 
 function isStatus(value: unknown): value is InterviewStatus {
@@ -108,7 +109,9 @@ function sanitizeSession(value: unknown, username: string): MockInterview | null
 
   if (sessionUsername !== username) return null;
 
-  const startedAt = typeof raw.startedAt === 'number' && Number.isFinite(raw.startedAt)
+  const durationMs = Math.max(60_000, raw.durationMs);
+  const accumulatedMs = Math.min(durationMs, Math.max(0, raw.accumulatedMs));
+  const startedAt = typeof raw.startedAt === 'number' && Number.isFinite(raw.startedAt) && raw.startedAt >= 0
     ? raw.startedAt
     : null;
 
@@ -117,9 +120,9 @@ function sanitizeSession(value: unknown, username: string): MockInterview | null
     username: sessionUsername,
     generatedAt: raw.generatedAt,
     targetCompany: raw.targetCompany,
-    durationMs: Math.max(1, raw.durationMs),
+    durationMs,
     startedAt,
-    accumulatedMs: Math.max(0, raw.accumulatedMs),
+    accumulatedMs,
     problems,
     status: raw.status,
   };
@@ -155,15 +158,17 @@ export function clearSession(username: string): void {
 }
 
 export function getElapsedMs(session: MockInterview, nowMs = Date.now()): number {
-  if (!session.startedAt) return Math.max(0, session.accumulatedMs);
+  const accumulatedMs = Math.max(0, Number.isFinite(session.accumulatedMs) ? session.accumulatedMs : 0);
+  if (!session.startedAt) return accumulatedMs;
   if (session.status === 'paused' || session.status === 'finished') {
-    return Math.max(0, session.accumulatedMs);
+    return accumulatedMs;
   }
-  return Math.max(0, session.accumulatedMs + (nowMs - session.startedAt));
+  return Math.max(0, accumulatedMs + (nowMs - session.startedAt));
 }
 
 export function getRemainingMs(session: MockInterview, nowMs = Date.now()): number {
-  return Math.max(0, session.durationMs - getElapsedMs(session, nowMs));
+  const durationMs = Math.max(0, Number.isFinite(session.durationMs) ? session.durationMs : 0);
+  return Math.max(0, durationMs - getElapsedMs(session, nowMs));
 }
 
 export function toggleProblemCompletion(
@@ -174,7 +179,7 @@ export function toggleProblemCompletion(
   const elapsedMs = getElapsedMs(session, nowMs);
   const allocatedMs = session.problems.reduce((sum, problem, problemIndex) => {
     if (problemIndex === index || !problem.completed || problem.timeSpentMs === null) return sum;
-    return sum + problem.timeSpentMs;
+    return sum + Math.max(0, problem.timeSpentMs);
   }, 0);
 
   return {
@@ -281,6 +286,7 @@ function pickMedium(
 
   const companyWeak = mediums.find(
     (problem) => problem.companies.includes(targetCompany)
+      && primaryWeak.length > 0
       && problem.primaryTopic.toLowerCase().includes(primaryWeak.toLowerCase()),
   );
   if (companyWeak) {
@@ -311,7 +317,7 @@ function pickMedium(
   }
 
   const weakMatch = mediums
-    .filter((problem) => problem.primaryTopic.toLowerCase().includes(primaryWeak.toLowerCase()))
+    .filter((problem) => primaryWeak.length > 0 && problem.primaryTopic.toLowerCase().includes(primaryWeak.toLowerCase()))
     .sort((a, b) => b.matchScore - a.matchScore)[0];
   if (weakMatch) {
     return {
@@ -397,15 +403,18 @@ export function generateMockInterview(
   const easy = pickEasy(analytics, srsStates);
   const medium = pickMedium(analytics, targetCompany);
   const hard = pickHard(analytics, easy.slug, medium.slug);
+  const safeDurationMin: InterviewDuration = durationMin === 45 || durationMin === 60 || durationMin === 90
+    ? durationMin
+    : 60;
 
   return {
     id: typeof crypto !== 'undefined' && crypto.randomUUID
       ? crypto.randomUUID()
       : String(Date.now()),
-    username,
+    username: normalizeLeetCodeUsername(username),
     generatedAt: Date.now(),
     targetCompany,
-    durationMs: durationMin * 60 * 1000,
+    durationMs: safeDurationMin * 60 * 1000,
     startedAt: null,
     accumulatedMs: 0,
     problems: [easy, medium, hard],

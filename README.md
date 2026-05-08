@@ -17,6 +17,7 @@ The app combines live profile data from LeetCode with browser-side analytics, a 
 After entering a LeetCode username, the app fetches profile data and renders a personalized dashboard with:
 
 - A profile header with avatar, rank, solve counts, and streak data
+- A tabbed workspace with desktop sidebar navigation and compact mobile tabs
 - A solver personality label such as `The Architect`, `The Grinder`, or `The Sprinter`
 - An interview readiness score out of 100
 - Topic coverage and weak-area analysis
@@ -29,7 +30,6 @@ After entering a LeetCode username, the app fetches profile data and renders a p
 - A local SRS queue for reviewing previously solved problems
 - Forgetting-curve and memory-health views
 - A virtual mock interview with timer, progress tracking, and persisted session state
-- Import/export of SRS progress as JSON backups
 
 ## Core Features
 
@@ -52,11 +52,12 @@ This means the dashboard is generated from live public LeetCode data at request 
 
 ### 2. Interview-readiness dashboard
 
-The main dashboard lives in `components/Dashboard.tsx` and is powered by `lib/analytics.ts`.
+The main dashboard is orchestrated by `components/Dashboard.tsx`, rendered through focused files in `components/dashboard/`, and powered by `lib/analytics.ts`.
 
 It computes:
 
 - A readiness score
+- A confidence level for that readiness estimate
 - A verdict label such as `Interview Ready`, `Almost There`, `On Track`, or `Keep Building`
 - Gaps still holding the user back
 - Company fit and missing topics
@@ -65,7 +66,7 @@ It computes:
 
 ### 3. Personalized problem recommendations
 
-The project ships with a curated problem catalog in `lib/analytics.ts`.
+The project ships with a curated problem catalog in `lib/analytics-data.ts`.
 
 Recommendations are ranked using a mix of:
 
@@ -165,19 +166,25 @@ Styling is mostly driven by:
 |   |-- api/profile/route.ts      # API endpoint for profile lookup
 |   |-- globals.css               # Global tokens and animation helpers
 |   |-- layout.tsx                # Fonts and page shell
-|   `-- page.tsx                  # Landing page, search, import/export flow
+|   `-- page.tsx                  # Landing page, search, and dashboard entry
 |-- components/
 |   |-- Dashboard.tsx             # Main analytics dashboard
+|   |-- ThemeToggle.tsx           # Light/dark theme switcher
+|   |-- dashboard/                # Workspace navigation, focused sections, and shared UI
 |   |-- Heatmap.tsx               # Submission heatmap with tooltip portal
 |   |-- MockInterviewPanel.tsx    # Timed mock interview UI
 |   |-- ReviewCard.tsx            # SRS review interaction
 |   |-- SRSPanel.tsx              # Memory queue and retention views
 |   `-- ForgetCurve.tsx           # Forgetting curve and retention bars
 |-- lib/
-|   |-- analytics.ts              # Heuristic scoring and recommendations
+|   |-- analytics.ts              # Heuristic scoring and recommendation orchestration
+|   |-- analytics-data.ts         # Curated company, topic, and problem data
 |   |-- leetcode.ts               # GraphQL fetch and response shaping
 |   |-- mock-interview.ts         # Mock interview session generation
+|   |-- profile-schema.ts         # Runtime profile payload validation
+|   |-- rate-limit.ts             # Testable in-memory rate limit helper
 |   |-- srs-store.ts              # Browser persistence for SRS data
+|   |-- username.ts               # Shared LeetCode username validation
 |   `-- srs.ts                    # SM-2 style review logic and retention math
 |-- scripts/
 |   `-- dev.mjs                   # Custom dev launcher for Node localStorage
@@ -244,6 +251,7 @@ npm run lint
 | `npm run build` | Builds the production app. |
 | `npm start` | Starts the built production server. |
 | `npm run lint` | Runs ESLint. |
+| `npm test` | Runs focused logic tests for analytics, SRS, validation, and rate limiting. |
 
 ## Browser Persistence
 
@@ -271,16 +279,10 @@ This data contains the review state for tracked problems, including:
 The current mock interview session is stored under:
 
 ```text
-leetinsight:mock:session
+leetinsight:mock:session:<username>
 ```
 
 That allows refresh persistence for an active or paused session.
-
-### Import/export backups
-
-From the main page, the user can export SRS data to a JSON file and later import it back.
-
-The exported file uses a versioned envelope so future schema migration is possible.
 
 ## Environment Variables
 
@@ -298,13 +300,22 @@ The scoring model in `lib/analytics.ts` is heuristic-based, not machine-learned.
 
 ### Interview readiness score
 
-The readiness score is built from:
+The readiness score is a capped, heuristic 100-point estimate. It combines:
 
-- Total problems solved
-- Hard problems solved
-- Topic diversity
-- Consistency score
-- Contest experience
+- Problem volume, including medium depth
+- Hard-problem depth and hard-problem share
+- Topic breadth and core topic depth
+- Practice quality, including consistency and acceptance
+- Company-topic fit
+- Memory retention from the local SRS when available
+
+Major weak signals cap the final score so high volume alone cannot produce an overconfident `Interview Ready` verdict. Examples include very low hard depth, stale recent activity, weak recent acceptance, poor company fit, or low tracked memory retention.
+
+The dashboard also shows readiness confidence:
+
+- `high`: enough profile, recent activity, topic, and memory signals are available
+- `medium`: useful estimate, but one or more signals are thin
+- `low`: early estimate only; more activity or SRS history is needed
 
 ### Solver personality
 
@@ -329,12 +340,17 @@ Burnout is estimated from recent submission volume and short-term trend.
 
 ### Company readiness
 
-Company readiness is based on overlap between solved topic families and a small in-repo map of commonly emphasized topics for:
+Company readiness is based on researched, depth-weighted solved topic families against a small in-repo map of commonly emphasized topics for:
 
 - Google
 - Meta
 - Amazon
 - Microsoft
+- JPMorgan Chase
+- Deloitte
+- Goldman Sachs
+
+The company profiles also include prep signals that LeetCode data cannot prove directly, such as system design, testing discipline, product judgment, and behavioral interview readiness. Those signals are shown in the UI as off-platform prep reminders instead of being blindly added to the numeric score.
 
 ### Recommended problems
 
@@ -395,6 +411,7 @@ This keeps the mock session targeted instead of random.
 
 - The app depends on LeetCode being reachable from the server runtime.
 - The profile endpoint returns a friendly error if the username is missing or the fetch fails.
+- The profile endpoint has a small in-memory rate limit and returns `Retry-After` when throttled.
 - Remote images from LeetCode domains are allowed in `next.config.ts`.
 
 ## Limitations and Tradeoffs
@@ -411,7 +428,7 @@ Readiness, burnout, personality, and company fit are useful estimates, not autho
 
 ### 3. Recommendation catalog is curated and finite
 
-Problem recommendations come from the hardcoded catalog in `lib/analytics.ts`, not the full LeetCode corpus.
+Problem recommendations come from the curated catalog in `lib/analytics-data.ts`, not the full LeetCode corpus.
 
 ### 4. SRS coverage is best effort
 
@@ -431,8 +448,8 @@ Good next steps if you want to take this further:
 - Add user auth and cloud persistence for SRS state
 - Persist analytics snapshots over time
 - Support more target companies and richer company topic maps
-- Add tests around analytics heuristics and SRS behavior
-- Add explicit confidence levels to recommendation and readiness outputs
+- Add broader tests around LeetCode GraphQL response shaping and UI behavior
+- Add confidence levels to recommendation outputs
 - Add a shareable public report page for a generated profile
 
 ## Troubleshooting

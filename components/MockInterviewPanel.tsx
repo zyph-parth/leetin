@@ -11,27 +11,27 @@ import {
 
 /* ─── Design tokens ──────────────────────────────────────────── */
 const C = {
-  accent: '#8B5CF6',
-  accentLight: 'rgba(139,92,246,0.12)',
-  accentBorder: 'rgba(139,92,246,0.25)',
-  cyan: '#06B6D4',
-  cyanLight: 'rgba(6,182,212,0.1)',
-  easy: '#10B981',
-  easyLight: 'rgba(16,185,129,0.12)',
-  easyBorder: 'rgba(16,185,129,0.25)',
-  medium: '#F59E0B',
-  mediumLight: 'rgba(245,158,11,0.12)',
-  mediumBorder: 'rgba(245,158,11,0.25)',
-  hard: '#F43F5E',
-  hardLight: 'rgba(244,63,94,0.12)',
-  hardBorder: 'rgba(244,63,94,0.25)',
-  border: '#2A2A42',
-  surface: '#0F0F1A',
-  surface2: '#181826',
-  surface3: '#222236',
-  textPrimary: '#EAEAF4',
-  textSecondary: '#8A8AAE',
-  textMuted: '#4E4E72',
+  accent: 'var(--accent)',
+  accentLight: 'var(--accent-light)',
+  accentBorder: 'var(--accent-border)',
+  cyan: 'var(--accent-2)',
+  cyanLight: 'var(--accent-2-light)',
+  easy: 'var(--easy)',
+  easyLight: 'var(--easy-light)',
+  easyBorder: 'var(--easy-border)',
+  medium: 'var(--medium)',
+  mediumLight: 'var(--medium-light)',
+  mediumBorder: 'var(--medium-border)',
+  hard: 'var(--hard)',
+  hardLight: 'var(--hard-light)',
+  hardBorder: 'var(--hard-border)',
+  border: 'var(--border)',
+  surface: 'var(--surface)',
+  surface2: 'var(--surface-2)',
+  surface3: 'var(--surface-3)',
+  textPrimary: 'var(--text-primary)',
+  textSecondary: 'var(--text-secondary)',
+  textMuted: 'var(--text-muted)',
 };
 
 const DIFF: Record<string, { color: string; bg: string; border: string; label: string }> = {
@@ -70,7 +70,7 @@ function TimerRing({
         transform="rotate(-90 70 70)"
         style={{
           transition: status === 'running' ? 'stroke-dasharray 1s linear, stroke 0.3s' : 'stroke 0.3s',
-          filter: `drop-shadow(0 0 6px ${urgentColor}99)`,
+          filter: `drop-shadow(0 0 6px ${urgentColor})`,
         }}
       />
       {/* Time text */}
@@ -320,7 +320,7 @@ export default function MockInterviewPanel({ analytics, srsStates, username, tar
       <div style={{
         padding: '20px 26px',
         borderBottom: `1px solid ${C.border}`,
-        background: `linear-gradient(135deg, rgba(139,92,246,0.08), rgba(6,182,212,0.04))`,
+        background: `linear-gradient(135deg, ${C.accentLight}, ${C.cyanLight})`,
         display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px',
       }}>
         <div>
@@ -428,15 +428,15 @@ export default function MockInterviewPanel({ analytics, srsStates, username, tar
               onClick={handleGenerate}
               style={{
                 width: '100%', padding: '15px',
-                background: `linear-gradient(135deg, ${C.accent}, #7C3AED)`,
+                background: `linear-gradient(135deg, ${C.accent}, ${C.cyan})`,
                 color: 'white', border: 'none', borderRadius: '12px',
                 fontSize: '14px', fontFamily: 'DM Mono, monospace', fontWeight: 500,
                 cursor: 'pointer', letterSpacing: '0.04em',
-                boxShadow: '0 0 24px rgba(139,92,246,0.35)',
+                boxShadow: 'var(--glow-accent)',
                 transition: 'all 0.15s ease',
               }}
-              onMouseEnter={e => { e.currentTarget.style.boxShadow = '0 0 40px rgba(139,92,246,0.55)'; e.currentTarget.style.transform = 'translateY(-1px)'; }}
-              onMouseLeave={e => { e.currentTarget.style.boxShadow = '0 0 24px rgba(139,92,246,0.35)'; e.currentTarget.style.transform = 'translateY(0)'; }}
+              onMouseEnter={e => { e.currentTarget.style.boxShadow = 'var(--glow-accent)'; e.currentTarget.style.transform = 'translateY(-1px)'; }}
+              onMouseLeave={e => { e.currentTarget.style.boxShadow = 'var(--glow-accent)'; e.currentTarget.style.transform = 'translateY(0)'; }}
             >
               Generate Mock Assessment →
             </button>
@@ -471,7 +471,7 @@ export default function MockInterviewPanel({ analytics, srsStates, username, tar
                       width: `${(completedCount / session.problems.length) * 100}%`,
                       background: `linear-gradient(90deg, ${C.accent}, ${C.cyan})`,
                       borderRadius: '2px', transition: 'width 0.4s ease',
-                      boxShadow: `0 0 8px ${C.accent}66`,
+                      boxShadow: 'var(--glow-accent)',
                     }} />
                   </div>
                 </div>
@@ -569,17 +569,17 @@ export default function MockInterviewPanel({ analytics, srsStates, username, tar
 /* ─── Button style helpers ───────────────────────────────────── */
 const primaryBtn: React.CSSProperties = {
   padding: '8px 18px',
-  background: 'linear-gradient(135deg, #8B5CF6, #7C3AED)',
+  background: 'linear-gradient(135deg, var(--accent), var(--accent-2))',
   color: 'white', border: 'none', borderRadius: '8px',
   fontSize: '12px', fontFamily: 'DM Mono, monospace',
   cursor: 'pointer', transition: 'all 0.15s ease',
-  boxShadow: '0 0 12px rgba(139,92,246,0.3)',
+  boxShadow: 'var(--glow-accent)',
 };
 
 const secondaryBtn: React.CSSProperties = {
   padding: '8px 18px',
   background: 'transparent',
-  color: '#8A8AAE', border: '1px solid #2A2A42', borderRadius: '8px',
+  color: 'var(--text-secondary)', border: '1px solid var(--border)', borderRadius: '8px',
   fontSize: '12px', fontFamily: 'DM Mono, monospace',
   cursor: 'pointer', transition: 'all 0.15s ease',
 };
@@ -587,7 +587,7 @@ const secondaryBtn: React.CSSProperties = {
 const ghostBtn: React.CSSProperties = {
   padding: '8px 14px',
   background: 'transparent',
-  color: '#4E4E72', border: '1px solid #2A2A42', borderRadius: '8px',
+  color: 'var(--text-muted)', border: '1px solid var(--border)', borderRadius: '8px',
   fontSize: '11px', fontFamily: 'DM Mono, monospace',
   cursor: 'pointer', transition: 'all 0.15s ease',
 };

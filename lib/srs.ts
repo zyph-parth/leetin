@@ -85,6 +85,24 @@ const DIFFICULTY_SEED: Record<Difficulty, { ef: number; interval: number }> = {
   Easy:   { ef: DEFAULT_EF, interval: 7 },
 };
 
+function toFiniteNumber(value: unknown, fallback: number): number {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : fallback;
+}
+
+function clamp(value: number, min: number, max: number): number {
+  if (!Number.isFinite(value)) return min;
+  return Math.max(min, Math.min(max, value));
+}
+
+function normalizeQuality(value: ReviewQuality): ReviewQuality {
+  return clamp(Math.round(Number(value)), 0, 5) as ReviewQuality;
+}
+
+function getSafeDifficulty(value: unknown): Difficulty {
+  return value === 'Easy' || value === 'Medium' || value === 'Hard' ? value : 'Medium';
+}
+
 // ─── Core Algorithm ──────────────────────────────────────────────────────────
 
 /**
@@ -101,21 +119,23 @@ export function computeInitialState(
   number: number,
   solvedAtMs: number,
 ): SM2State {
-  const seed = DIFFICULTY_SEED[difficulty];
-  const nextReviewMs = solvedAtMs + seed.interval * MS_PER_DAY;
+  const safeDifficulty = getSafeDifficulty(difficulty);
+  const safeSolvedAtMs = Math.max(0, toFiniteNumber(solvedAtMs, Date.now()));
+  const seed = DIFFICULTY_SEED[safeDifficulty];
+  const nextReviewMs = safeSolvedAtMs + seed.interval * MS_PER_DAY;
 
   return {
     slug,
     title,
-    difficulty,
-    topics,
-    number,
+    difficulty: safeDifficulty,
+    topics: Array.from(new Set(topics.filter(Boolean))).slice(0, 8),
+    number: Number.isFinite(number) ? Math.round(number) : -1,
     n: 0,
     ef: seed.ef,
     interval: seed.interval,
     nextReviewMs,
-    lastReviewMs: solvedAtMs,
-    solvedAtMs,
+    lastReviewMs: safeSolvedAtMs,
+    solvedAtMs: safeSolvedAtMs,
     lastRating: null,
     totalReviews: 0,
   };
@@ -140,12 +160,15 @@ export function updateSM2(
   quality: ReviewQuality,
   options: UpdateSM2Options = {},
 ): SM2State {
-  const now = options.nowMs ?? Date.now();
+  const q = normalizeQuality(quality);
+  const now = toFiniteNumber(options.nowMs, Date.now());
   const random = options.random ?? Math.random;
-  let { n, ef, interval } = state;
+  let n = Math.max(0, Math.round(toFiniteNumber(state.n, 0)));
+  let ef = Math.max(MIN_EF, toFiniteNumber(state.ef, DEFAULT_EF));
+  let interval = Math.max(1, Math.round(toFiniteNumber(state.interval, 1)));
   const isFirstReviewFromBootstrap = state.totalReviews === 0 && state.lastRating === null;
 
-  if (quality < 3) {
+  if (q < 3) {
     // Failed recall — reset to beginning
     n = 0;
     interval = 1;
@@ -176,7 +199,7 @@ export function updateSM2(
     }
 
     // EF update — the quadratic formula from the SM-2 paper
-    ef = ef + (0.1 - (5 - quality) * (0.08 + (5 - quality) * 0.02));
+    ef = ef + (0.1 - (5 - q) * (0.08 + (5 - q) * 0.02));
     ef = Math.max(MIN_EF, ef);
   }
 
@@ -187,8 +210,8 @@ export function updateSM2(
     interval,
     nextReviewMs: now + interval * MS_PER_DAY,
     lastReviewMs: now,
-    lastRating: quality,
-    totalReviews: state.totalReviews + 1,
+    lastRating: q,
+    totalReviews: Math.max(0, Math.round(toFiniteNumber(state.totalReviews, 0))) + 1,
   };
 }
 
@@ -200,8 +223,10 @@ export function updateSM2(
  */
 export function getRetentionPercent(state: SM2State, nowMs = Date.now()): number {
   // Dynamic Stability: scales so retention hits exactly ~90% when the interval expires
-  const S = Math.max(1, state.interval) * 9.49;
-  const daysSinceReview = (nowMs - state.lastReviewMs) / MS_PER_DAY;
+  const interval = Math.max(1, toFiniteNumber(state.interval, 1));
+  const lastReviewMs = toFiniteNumber(state.lastReviewMs, nowMs);
+  const S = interval * 9.49;
+  const daysSinceReview = Math.max(0, (nowMs - lastReviewMs) / MS_PER_DAY);
   const R = Math.exp(-daysSinceReview / S) * 100;
   return Math.max(0, Math.min(100, Math.round(R)));
 }
@@ -219,7 +244,8 @@ export function getRetentionPercent(state: SM2State, nowMs = Date.now()): number
  * Positive = days past due date. Negative = days until due. Zero = due today.
  */
 export function getDaysOverdue(state: SM2State, nowMs = Date.now()): number {
-  const rawDays = (nowMs - state.nextReviewMs) / MS_PER_DAY;
+  const nextReviewMs = toFiniteNumber(state.nextReviewMs, nowMs);
+  const rawDays = (nowMs - nextReviewMs) / MS_PER_DAY;
   if (Math.abs(rawDays) < 1) return 0;
   return rawDays > 0 ? Math.floor(rawDays) : Math.ceil(rawDays);
 }
@@ -241,9 +267,9 @@ export function getDueProblems(
   // Urgency score: days-overdue weighted by inverse retention.
   // A problem that's 5 days overdue AND at 10% retention scores very high.
   const score = (s: SM2State): number => {
-    const overdue = getDaysOverdue(s, nowMs);
+    const overdue = Math.max(0, getDaysOverdue(s, nowMs));
     const retention = getRetentionPercent(s, nowMs);
-    return overdue * (1 + (100 - retention) / 100);
+    return (overdue + 1) * (1 + (100 - retention) / 100);
   };
 
   return due.sort((a, b) => score(b) - score(a)).slice(0, limit);
@@ -272,12 +298,15 @@ export function getUpcomingProblems(
  * Marks: current position (isNow), scheduled review (isReview).
  */
 export function computeForgetCurve(state: SM2State, nowMs = Date.now()): CurvePoint[] {
-  const S = Math.max(1, state.interval) * 9.49;
-  const totalDays = Math.max(state.interval * 3, 30);
+  const interval = Math.max(1, toFiniteNumber(state.interval, 1));
+  const lastReviewMs = toFiniteNumber(state.lastReviewMs, nowMs);
+  const nextReviewMs = toFiniteNumber(state.nextReviewMs, lastReviewMs + interval * MS_PER_DAY);
+  const S = interval * 9.49;
+  const totalDays = Math.max(interval * 3, 30);
   const points: CurvePoint[] = [];
 
-  const reviewDay = (state.nextReviewMs - state.lastReviewMs) / MS_PER_DAY;
-  const nowDay = (nowMs - state.lastReviewMs) / MS_PER_DAY;
+  const reviewDay = (nextReviewMs - lastReviewMs) / MS_PER_DAY;
+  const nowDay = Math.max(0, (nowMs - lastReviewMs) / MS_PER_DAY);
 
   // Sample every 0.5 days for a smooth curve
   for (let d = 0; d <= totalDays; d += 0.5) {
@@ -310,7 +339,7 @@ export function computeMemoryHealth(
   let weightedRetention = 0;
 
   for (const s of all) {
-    const w = weights[s.difficulty];
+    const w = weights[getSafeDifficulty(s.difficulty)];
     weightedRetention += getRetentionPercent(s, nowMs) * w;
     totalWeight += w;
   }
@@ -333,7 +362,11 @@ export function getTopicRetentionBreakdown(
     const retention = getRetentionPercent(s, nowMs);
     const isDue = s.nextReviewMs <= nowMs;
 
-    for (const topic of s.topics.slice(0, 2)) { // primary topics only
+    const topics = Array.isArray(s.topics)
+      ? s.topics.filter((topic): topic is string => typeof topic === 'string' && topic.trim().length > 0)
+      : [];
+
+    for (const topic of topics.slice(0, 2)) { // primary topics only
       if (!topicMap[topic]) topicMap[topic] = { totalRetention: 0, count: 0, dueCount: 0 };
       topicMap[topic].totalRetention += retention;
       topicMap[topic].count++;
@@ -356,15 +389,15 @@ export function getTopicRetentionBreakdown(
  */
 export function getQueueStats(states: Record<string, SM2State>, nowMs = Date.now()) {
   const all = Object.values(states);
-  const dueNow = all.filter(s => s.nextReviewMs <= nowMs).length;
+  const dueNow = all.filter(s => toFiniteNumber(s.nextReviewMs, Number.POSITIVE_INFINITY) <= nowMs).length;
   const dueWeek = all.filter(
-    s => s.nextReviewMs <= nowMs + 7 * MS_PER_DAY,
+    s => toFiniteNumber(s.nextReviewMs, Number.POSITIVE_INFINITY) <= nowMs + 7 * MS_PER_DAY,
   ).length;
 
   return {
     total: all.length,
     dueNow,
     dueWeek,
-    learned: all.filter(s => s.totalReviews > 0).length,
+    learned: all.filter(s => toFiniteNumber(s.totalReviews, 0) > 0).length,
   };
 }

@@ -7,8 +7,10 @@
  */
 
 import type { LeetCodeProfile } from './leetcode';
+import { isAcceptedSubmissionStatus } from './leetcode';
 import type { SM2State, Difficulty, ReviewQuality } from './srs';
 import { computeInitialState } from './srs';
+import { normalizeLeetCodeUsername } from './username';
 
 export const SRS_STORAGE_PREFIX = 'leetinsight:srs:';
 
@@ -67,7 +69,7 @@ function sanitizeTopics(value: unknown): string[] {
 }
 
 export function getSRSStorageKey(username: string): string {
-  return `${SRS_STORAGE_PREFIX}${username}`;
+  return `${SRS_STORAGE_PREFIX}${normalizeLeetCodeUsername(username)}`;
 }
 
 export function sanitizeSM2State(value: unknown, slugHint?: string): SM2State | null {
@@ -165,14 +167,18 @@ export interface SolvedProblem {
 
 export function extractSolvedProblems(profile: LeetCodeProfile): SolvedProblem[] {
   const seen = new Map<string, SolvedProblem>();
+  const nowMs = Date.now();
 
   for (const submission of profile.recentSubmissions ?? []) {
-    if (submission.statusDisplay !== 'Accepted') continue;
+    if (!isAcceptedSubmissionStatus(submission.statusDisplay)) continue;
 
     const slug = submission.titleSlug?.trim();
     if (!slug) continue;
 
-    const solvedAtMs = Math.max(0, (Number(submission.timestamp) || 0) * 1000) || Date.now();
+    const timestampMs = Number(submission.timestamp) * 1000;
+    const solvedAtMs = Number.isFinite(timestampMs) && timestampMs > 0
+      ? Math.min(timestampMs, nowMs)
+      : nowMs;
     const current = seen.get(slug);
 
     if (!current || solvedAtMs < current.solvedAtMs) {

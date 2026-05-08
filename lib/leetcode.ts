@@ -1,3 +1,5 @@
+import { getLeetCodeUsernameError, normalizeLeetCodeUsername } from './username';
+
 export interface LeetCodeProfile {
   username: string;
   realName: string;
@@ -124,6 +126,7 @@ const LEETCODE_API = 'https://leetcode.com/graphql';
 const MS_PER_DAY = 86_400_000;
 const RECENT_SUBMISSION_LIMIT = 250;
 const QUESTION_DETAIL_BATCH_SIZE = 40;
+const TITLE_SLUG_PATTERN = /^[A-Za-z0-9-]{1,160}$/;
 
 async function gql<T>(query: string, variables: Record<string, unknown> = {}): Promise<T> {
   const requestInit: RequestInit & { next?: { revalidate: number } } = {
@@ -165,19 +168,66 @@ function getDifficultyMetric(
 ): number {
   const entry = counts.find((count) => count.difficulty === difficulty);
   const value = entry?.[key];
-  return typeof value === 'number' ? value : 0;
+  return toNonNegativeInteger(value);
 }
 
-function toLocalDayStart(tsSeconds: number): number {
+function toFiniteNumber(value: unknown): number | null {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : null;
+}
+
+function toNonNegativeInteger(value: unknown): number {
+  const numeric = toFiniteNumber(value);
+  return numeric === null ? 0 : Math.max(0, Math.round(numeric));
+}
+
+function clampPercent(value: number): number {
+  return Math.max(0, Math.min(100, Math.round(value)));
+}
+
+function toLocalDayStart(tsSeconds: number): number | null {
+  if (!Number.isFinite(tsSeconds) || tsSeconds <= 0) return null;
   const d = new Date(tsSeconds * 1000);
-  return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const dayStart = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  return Number.isFinite(dayStart) ? dayStart : null;
+}
+
+export function normalizeSubmissionCalendar(value: unknown): Record<string, number> {
+  let parsed = value;
+
+  if (typeof value === 'string') {
+    try {
+      parsed = JSON.parse(value) as unknown;
+    } catch {
+      return {};
+    }
+  }
+
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return {};
+
+  const normalized = new Map<number, number>();
+  for (const [timestamp, countValue] of Object.entries(parsed as Record<string, unknown>)) {
+    const tsSeconds = toFiniteNumber(timestamp);
+    const count = toNonNegativeInteger(countValue);
+    if (tsSeconds === null || tsSeconds <= 0 || count <= 0) continue;
+
+    const normalizedTimestamp = Math.floor(tsSeconds);
+    normalized.set(normalizedTimestamp, (normalized.get(normalizedTimestamp) ?? 0) + count);
+  }
+
+  return Object.fromEntries(
+    Array.from(normalized.entries())
+      .sort(([a], [b]) => a - b)
+      .map(([timestamp, count]) => [String(timestamp), count]),
+  );
 }
 
 function computeMaxStreak(submissionCalendar: Record<string, number>): number {
   const activeDays = Array.from(
     Object.entries(submissionCalendar).reduce<Map<number, number>>((days, [ts, count]) => {
-      if (count <= 0) return days;
+      if (!Number.isFinite(count) || count <= 0) return days;
       const localDayStart = toLocalDayStart(Number(ts));
+      if (localDayStart === null) return days;
       days.set(localDayStart, (days.get(localDayStart) ?? 0) + count);
       return days;
     }, new Map()),
@@ -204,12 +254,80 @@ function computeMaxStreak(submissionCalendar: Record<string, number>): number {
   return maxStreak;
 }
 
+export function isAcceptedSubmissionStatus(status: unknown): boolean {
+  return typeof status === 'string' && status.trim().toLowerCase() === 'accepted';
+}
+
+function isValidTitleSlug(slug: unknown): slug is string {
+  return typeof slug === 'string' && TITLE_SLUG_PATTERN.test(slug.trim());
+}
+
+function normalizeRecentSubmission(value: unknown): Submission | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
+
+  const raw = value as Record<string, unknown>;
+  if (typeof raw.titleSlug !== 'string' || !raw.titleSlug.trim()) return null;
+
+  return {
+    title: typeof raw.title === 'string' && raw.title.trim() ? raw.title.trim() : raw.titleSlug.trim(),
+    titleSlug: raw.titleSlug.trim(),
+    timestamp: typeof raw.timestamp === 'string' ? raw.timestamp.trim() : String(toNonNegativeInteger(raw.timestamp)),
+    statusDisplay: typeof raw.statusDisplay === 'string' ? raw.statusDisplay.trim() : '',
+    lang: typeof raw.lang === 'string' ? raw.lang.trim() : '',
+  };
+}
+
+function normalizeRecentSubmissions(submissions: unknown): Submission[] {
+  if (!Array.isArray(submissions)) return [];
+  return submissions
+    .map((submission) => normalizeRecentSubmission(submission))
+    .filter((submission): submission is Submission => submission !== null)
+    .slice(0, RECENT_SUBMISSION_LIMIT);
+}
+
+function normalizeTagStats(stats: unknown): TagStat[] {
+  if (!Array.isArray(stats)) return [];
+
+  const bySlug = new Map<string, TagStat>();
+  for (const value of stats) {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) continue;
+    const raw = value as Record<string, unknown>;
+    const tagName = typeof raw.tagName === 'string' ? raw.tagName.trim() : '';
+    const tagSlug = typeof raw.tagSlug === 'string' ? raw.tagSlug.trim() : tagName.toLowerCase().replace(/\s+/g, '-');
+    const problemsSolved = toNonNegativeInteger(raw.problemsSolved);
+    if (!tagName || !tagSlug || problemsSolved <= 0) continue;
+
+    const existing = bySlug.get(tagSlug);
+    bySlug.set(tagSlug, {
+      tagName,
+      tagSlug,
+      problemsSolved: Math.max(existing?.problemsSolved ?? 0, problemsSolved),
+    });
+  }
+
+  return Array.from(bySlug.values()).sort((a, b) => b.problemsSolved - a.problemsSolved);
+}
+
+function normalizeLanguageStats(stats: unknown): LanguageStat[] {
+  if (!Array.isArray(stats)) return [];
+
+  return stats
+    .flatMap((value): LanguageStat[] => {
+      if (typeof value !== 'object' || value === null || Array.isArray(value)) return [];
+      const raw = value as Record<string, unknown>;
+      const languageName = typeof raw.languageName === 'string' ? raw.languageName.trim() : '';
+      const problemsSolved = toNonNegativeInteger(raw.problemsSolved);
+      return languageName && problemsSolved > 0 ? [{ languageName, problemsSolved }] : [];
+    })
+    .sort((a, b) => b.problemsSolved - a.problemsSolved);
+}
+
 async function fetchRecentProblemDetails(submissions: Submission[]): Promise<Record<string, QuestionDetail>> {
   const acceptedSlugs = Array.from(
     new Set(
       submissions
-        .filter((submission) => submission.statusDisplay === 'Accepted' && submission.titleSlug)
-        .map((submission) => submission.titleSlug),
+        .filter((submission) => isAcceptedSubmissionStatus(submission.statusDisplay) && isValidTitleSlug(submission.titleSlug))
+        .map((submission) => submission.titleSlug.trim()),
     ),
   );
 
@@ -222,7 +340,7 @@ async function fetchRecentProblemDetails(submissions: Submission[]): Promise<Rec
     const detailFields = slugBatch
       .map(
         (slug, index) => `
-          q${index}: question(titleSlug: "${slug}") {
+          q${index}: question(titleSlug: ${JSON.stringify(slug)}) {
             questionFrontendId
             difficulty
             topicTags { name slug }
@@ -261,6 +379,12 @@ function attachSubmissionDetails(
 }
 
 export async function fetchLeetCodeProfile(username: string): Promise<LeetCodeProfile> {
+  const normalizedUsername = normalizeLeetCodeUsername(username);
+  const usernameError = getLeetCodeUsernameError(normalizedUsername);
+  if (usernameError) {
+    throw new LeetCodeApiError(usernameError, 400);
+  }
+
   const query = `
     query($u: String!, $l: Int!) {
       matchedUser(username: $u) {
@@ -296,14 +420,14 @@ export async function fetchLeetCodeProfile(username: string): Promise<LeetCodePr
     }
   `;
 
-  const data = await gql<ProfileQueryData>(query, { u: username, l: RECENT_SUBMISSION_LIMIT });
+  const data = await gql<ProfileQueryData>(query, { u: normalizedUsername, l: RECENT_SUBMISSION_LIMIT });
 
   const user = data.matchedUser;
   if (!user) {
-    throw new LeetCodeApiError(`User "${username}" not found on LeetCode.`, 404);
+    throw new LeetCodeApiError(`User "${normalizedUsername}" not found on LeetCode.`, 404);
   }
 
-  const recentSubmissionsRaw = data.recentSubmissionList ?? [];
+  const recentSubmissionsRaw = normalizeRecentSubmissions(data.recentSubmissionList ?? []);
   let submissionDetails: Record<string, QuestionDetail> = {};
   try {
     submissionDetails = await fetchRecentProblemDetails(recentSubmissionsRaw);
@@ -317,51 +441,53 @@ export async function fetchLeetCodeProfile(username: string): Promise<LeetCodePr
   const allQuestions = data.allQuestionsCount ?? [];
 
   const totalSolved = getDifficultyMetric(acNums, 'All', 'count');
+  const easySolved = getDifficultyMetric(acNums, 'Easy', 'count');
+  const mediumSolved = getDifficultyMetric(acNums, 'Medium', 'count');
+  const hardSolved = getDifficultyMetric(acNums, 'Hard', 'count');
+  const acceptedSubmissions = getDifficultyMetric(acNums, 'All', 'submissions');
   const totalSubmissions = getDifficultyMetric(totalNums, 'All', 'submissions');
   const acceptanceRate = totalSubmissions > 0
-    ? Math.round((totalSolved / totalSubmissions) * 100)
+    ? clampPercent((Math.min(acceptedSubmissions, totalSubmissions) / totalSubmissions) * 100)
     : 0;
 
-  const rawCalendar = user.userCalendar?.submissionCalendar ?? '{}';
-  let submissionCalendar: Record<string, number> = {};
-  try {
-    submissionCalendar = JSON.parse(rawCalendar) as Record<string, number>;
-  } catch {
-    submissionCalendar = {};
-  }
+  const submissionCalendar = normalizeSubmissionCalendar(user.userCalendar?.submissionCalendar ?? {});
+  const computedActiveDays = Object.values(submissionCalendar).filter((count) => count > 0).length;
+  const maxStreak = computeMaxStreak(submissionCalendar);
+  const apiCurrentStreak = toNonNegativeInteger(user.userCalendar?.streak);
+  const currentStreak = maxStreak > 0 ? Math.min(apiCurrentStreak, maxStreak) : apiCurrentStreak;
 
   const contest = data.userContestRanking;
   const tagCounts = user.tagProblemCounts;
 
   return {
-    username: user.username,
-    realName: user.profile?.realName || user.username,
+    username: user.username || normalizedUsername,
+    realName: user.profile?.realName?.trim() || user.username || normalizedUsername,
     avatar: user.profile?.userAvatar || '',
-    ranking: user.profile?.ranking || 0,
-    totalSolved,
-    easySolved: getDifficultyMetric(acNums, 'Easy', 'count'),
-    mediumSolved: getDifficultyMetric(acNums, 'Medium', 'count'),
-    hardSolved: getDifficultyMetric(acNums, 'Hard', 'count'),
+    ranking: toNonNegativeInteger(user.profile?.ranking),
+    totalSolved: Math.max(totalSolved, easySolved + mediumSolved + hardSolved),
+    easySolved,
+    mediumSolved,
+    hardSolved,
     totalQuestions: getDifficultyMetric(allQuestions, 'All', 'count'),
     easyTotal: getDifficultyMetric(allQuestions, 'Easy', 'count'),
     mediumTotal: getDifficultyMetric(allQuestions, 'Medium', 'count'),
     hardTotal: getDifficultyMetric(allQuestions, 'Hard', 'count'),
     acceptanceRate,
     submissionCalendar,
-    totalActiveDays: user.userCalendar?.totalActiveDays || 0,
-    maxStreak: computeMaxStreak(submissionCalendar),
-    currentStreak: user.userCalendar?.streak || 0,
+    totalActiveDays: Math.max(toNonNegativeInteger(user.userCalendar?.totalActiveDays), computedActiveDays),
+    maxStreak,
+    currentStreak,
     recentSubmissions,
     tagStats: {
-      advanced: (tagCounts?.advanced ?? []).sort((a, b) => b.problemsSolved - a.problemsSolved),
-      intermediate: (tagCounts?.intermediate ?? []).sort((a, b) => b.problemsSolved - a.problemsSolved),
-      fundamental: (tagCounts?.fundamental ?? []).sort((a, b) => b.problemsSolved - a.problemsSolved),
+      advanced: normalizeTagStats(tagCounts?.advanced),
+      intermediate: normalizeTagStats(tagCounts?.intermediate),
+      fundamental: normalizeTagStats(tagCounts?.fundamental),
     },
-    contestRating: Math.round(contest?.rating || 0),
-    contestAttended: contest?.attendedContestsCount || 0,
-    contestGlobalRanking: contest?.globalRanking || 0,
-    topPercentage: contest?.topPercentage || 0,
+    contestRating: toNonNegativeInteger(contest?.rating),
+    contestAttended: toNonNegativeInteger(contest?.attendedContestsCount),
+    contestGlobalRanking: toNonNegativeInteger(contest?.globalRanking),
+    topPercentage: clampPercent(toFiniteNumber(contest?.topPercentage) ?? 0),
     badges: user.badges ?? [],
-    languageStats: (user.languageProblemCount ?? []).sort((a, b) => b.problemsSolved - a.problemsSolved),
+    languageStats: normalizeLanguageStats(user.languageProblemCount),
   };
 }

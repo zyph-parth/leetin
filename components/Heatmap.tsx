@@ -32,12 +32,12 @@ function intensity(count: number, max: number): number {
 }
 
 function cellColor(count: number, max: number): string {
-  if (count <= 0) return '#181826';
+  if (count <= 0) return 'var(--heatmap-0)';
   const t = intensity(count, max);
-  if (t < 0.25) return '#3B2A6B';
-  if (t < 0.5) return '#5B3E9F';
-  if (t < 0.75) return '#7C4FD4';
-  return '#8B5CF6';
+  if (t < 0.25) return 'var(--heatmap-1)';
+  if (t < 0.5) return 'var(--heatmap-2)';
+  if (t < 0.75) return 'var(--heatmap-3)';
+  return 'var(--heatmap-4)';
 }
 
 function fmtDate(date: Date): string {
@@ -212,23 +212,23 @@ export default function Heatmap({ data }: HeatmapProps) {
             transform: 'translateX(-50%)',
             zIndex: 99999,
             padding: '6px 10px',
-            background: '#222236',
-            border: '1px solid #3E3E5E',
+            background: 'var(--tooltip-bg)',
+            border: '1px solid var(--tooltip-border)',
             borderRadius: '7px',
             fontSize: '11px',
             fontFamily: 'DM Mono, monospace',
-            color: '#EAEAF4',
+            color: 'var(--text-primary)',
             whiteSpace: 'nowrap',
             pointerEvents: 'none',
-            boxShadow: '0 4px 20px rgba(0,0,0,0.6)',
+            boxShadow: 'var(--tooltip-shadow)',
           }}
         >
-          <span style={{ color: tooltip.count > 0 ? '#8B5CF6' : '#4E4E72', fontWeight: 600 }}>
+          <span style={{ color: tooltip.count > 0 ? 'var(--accent)' : 'var(--text-muted)', fontWeight: 600 }}>
             {tooltip.count > 0
               ? `${tooltip.count} submission${tooltip.count !== 1 ? 's' : ''}`
               : 'No submissions'}
           </span>
-          <span style={{ color: '#6E6E9A', marginLeft: '6px' }}>{fmtDate(tooltip.date)}</span>
+          <span style={{ color: 'var(--tooltip-muted)', marginLeft: '6px' }}>{fmtDate(tooltip.date)}</span>
           {resolvedTooltip.showAbove ? (
             <div style={{
               position: 'absolute',
@@ -239,7 +239,7 @@ export default function Heatmap({ data }: HeatmapProps) {
               height: 0,
               borderLeft: '5px solid transparent',
               borderRight: '5px solid transparent',
-              borderTop: '5px solid #222236',
+              borderTop: '5px solid var(--tooltip-bg)',
             }}
             />
           ) : (
@@ -252,7 +252,7 @@ export default function Heatmap({ data }: HeatmapProps) {
               height: 0,
               borderLeft: '5px solid transparent',
               borderRight: '5px solid transparent',
-              borderBottom: '5px solid #222236',
+              borderBottom: '5px solid var(--tooltip-bg)',
             }}
             />
           )}
@@ -281,7 +281,7 @@ export default function Heatmap({ data }: HeatmapProps) {
               textAnchor="end"
               dominantBaseline="middle"
               aria-hidden="true"
-              style={{ fontSize: '9px', fontFamily: 'DM Mono, monospace', fill: '#4E4E72' }}
+              style={{ fontSize: '9px', fontFamily: 'DM Mono, monospace', fill: 'var(--text-muted)' }}
             >
               {label}
             </text>
@@ -293,7 +293,7 @@ export default function Heatmap({ data }: HeatmapProps) {
               x={x}
               y={MONTH_H - 5}
               aria-hidden="true"
-              style={{ fontSize: '9px', fontFamily: 'DM Mono, monospace', fill: '#4E4E72' }}
+              style={{ fontSize: '9px', fontFamily: 'DM Mono, monospace', fill: 'var(--text-muted)' }}
             >
               {label}
             </text>
@@ -345,7 +345,7 @@ export default function Heatmap({ data }: HeatmapProps) {
         gap: '10px',
         }}
       >
-        <div style={{ width: '100%', fontSize: '11px', color: '#4E4E72', lineHeight: 1.5 }}>
+        <div style={{ width: '100%', fontSize: '11px', color: 'var(--text-muted)', lineHeight: 1.5 }}>
           Scroll horizontally on smaller screens to inspect the full year.
         </div>
         <div style={{ display: 'flex', gap: '20px' }}>
@@ -356,7 +356,7 @@ export default function Heatmap({ data }: HeatmapProps) {
             <div key={label}>
               <div style={{
                 fontSize: '9px',
-                color: '#4E4E72',
+                color: 'var(--text-muted)',
                 fontFamily: 'DM Mono, monospace',
                 letterSpacing: '0.1em',
                 marginBottom: '2px',
@@ -364,7 +364,7 @@ export default function Heatmap({ data }: HeatmapProps) {
               >
                 {label.toUpperCase()}
               </div>
-              <div style={{ fontSize: '13px', color: '#EAEAF4', fontFamily: 'DM Mono, monospace' }}>
+              <div style={{ fontSize: '13px', color: 'var(--text-primary)', fontFamily: 'DM Mono, monospace' }}>
                 {val}
               </div>
             </div>
@@ -372,8 +372,8 @@ export default function Heatmap({ data }: HeatmapProps) {
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }} aria-hidden="true">
-          <span style={{ fontSize: '9px', color: '#4E4E72', fontFamily: 'DM Mono, monospace' }}>Less</span>
-          {(['#181826', '#3B2A6B', '#5B3E9F', '#7C4FD4', '#8B5CF6'] as const).map((color, index) => (
+          <span style={{ fontSize: '9px', color: 'var(--text-muted)', fontFamily: 'DM Mono, monospace' }}>Less</span>
+          {(['var(--heatmap-0)', 'var(--heatmap-1)', 'var(--heatmap-2)', 'var(--heatmap-3)', 'var(--heatmap-4)'] as const).map((color, index) => (
             <div
               key={index}
               style={{
@@ -381,11 +381,11 @@ export default function Heatmap({ data }: HeatmapProps) {
                 height: CELL,
                 borderRadius: '3px',
                 background: color,
-                border: index === 0 ? '1px solid #2A2A42' : 'none',
+                border: index === 0 ? '1px solid var(--border)' : 'none',
               }}
             />
           ))}
-          <span style={{ fontSize: '9px', color: '#4E4E72', fontFamily: 'DM Mono, monospace' }}>More</span>
+          <span style={{ fontSize: '9px', color: 'var(--text-muted)', fontFamily: 'DM Mono, monospace' }}>More</span>
         </div>
       </div>
     </div>
